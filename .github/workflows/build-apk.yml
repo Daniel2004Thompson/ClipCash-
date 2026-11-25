@@ -55,6 +55,6 @@ jobs:
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: clipcash-debug-apk
+          name: clipcash-debug-apk-v3.0.0
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error

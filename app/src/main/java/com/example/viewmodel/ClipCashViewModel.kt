@@ -888,6 +888,19 @@ class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel(
         }
     }
 
+    fun recordArcadeGameResult(gameTitle: String, coinsWon: Int) {
+        viewModelScope.launch {
+            val earned = repository.recordArcadeGameReward(gameTitle, coinsWon)
+            if (earned > 0) {
+                feedbackBanner.value = RewardFeedback(
+                    title = "$gameTitle Complete!",
+                    subtitle = "Coins added to your ClipCash wallet.",
+                    coinsDelta = earned
+                )
+            }
+        }
+    }
+
     fun spinLuckyWheel(prizeCoins: Int, usedFreeSpin: Boolean) {
         viewModelScope.launch {
             repository.spinLuckyWheel(prizeCoins, usedFreeSpin)

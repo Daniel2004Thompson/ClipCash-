@@ -9,9 +9,17 @@ ClipCash is a modern Android rewards app built with Kotlin and Jetpack Compose (
 ## Features
 
 - **Watch & Earn (`WatchScreen` & `VideoPlayerScreen`)**: Browse curated short videos by category, watch clips in an interactive vertical player with playback tracking, and earn coin rewards upon completion.
-- **Play & Earn Arcade (`GamesScreen`)**:
-  - **Coin Catcher**: Catch falling coins and bonuses in an interactive mini-game to stack coins.
-  - **Lucky Spin**: Spin the prize wheel for instant coin rewards.
+- **Play & Earn Arcade (`GamesScreen`)** with category filters (`Arcade`, `Puzzle`, `Brain`, `Luck`) and 10 playable games:
+  - **Coin Catcher Blitz**: Catch falling coins and cash bills while dodging bombs.
+  - **Lucky Cash Wheel**: Spin the prize wheel for instant coin rewards.
+  - **Memory Match Flip**: Flip cards and pair all 6 icon matches in minimal moves.
+  - **Balloon Pop Rush**: Pop rising regular and golden balloons while avoiding spiked ones.
+  - **Math Dash Sprint**: Rapid-fire arithmetic sprint with 2x–3x streak multipliers.
+  - **Reaction Flash**: 5-round millisecond reflex test.
+  - **Scratch & Win**: Touch-scratchable metallic foil card with match-3 prizes.
+  - **Slide & Merge 256**: 4x4 swipe and arrow-controlled number merging puzzle.
+  - **Color Beat Simon**: Repeat growing 4-pad neon light sequences.
+  - **Whack-a-Coin**: 3x3 grid whack arcade for coins and gems.
 - **Daily Quests & Check-In (`QuestsScreen`)**: Claim daily check-in bonuses and complete milestone quests as your watch and play progress grows.
 - **Wallet & Account Management (`WalletScreen`)**: View your coin balance, transaction history, cash-out options, and manage account security.
 - **Authentication & Verification (`AuthScreen` & `VerificationScreens`)**: Complete Sign In, Sign Up, OTP email verification, Forgot/Reset Password, and Change Email flows.
@@ -30,7 +38,7 @@ ClipCash is a modern Android rewards app built with Kotlin and Jetpack Compose (
   - Gradle `9.3.1`
   - JDK `21`
   - `minSdk`: `24` | `targetSdk`: `36` | `compileSdk`: `36.1`
-  - Current Version: `2.0` (`versionCode = 2`)
+  - Current Version: `3.0.0` (`versionCode = 3`)
 
 ---
 

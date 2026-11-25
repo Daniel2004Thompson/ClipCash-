@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,6 +34,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +59,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -73,11 +78,22 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.R
 import com.example.ui.components.CoinBadge
 import androidx.compose.foundation.BorderStroke
+import com.example.ui.screens.games.ArcadeCategory
+import com.example.ui.screens.games.ArcadeGameType
+import com.example.ui.screens.games.BalloonPopDialog
+import com.example.ui.screens.games.ColorBeatDialog
+import com.example.ui.screens.games.MathDashDialog
+import com.example.ui.screens.games.MemoryMatchDialog
+import com.example.ui.screens.games.ReactionFlashDialog
+import com.example.ui.screens.games.ScratchCardDialog
+import com.example.ui.screens.games.SlideMergeDialog
+import com.example.ui.screens.games.WhackCoinDialog
 import com.example.ui.theme.CashEmerald
 import com.example.ui.theme.CoinAmber
 import com.example.ui.theme.CoinGold
 import com.example.ui.theme.CoralRed
 import com.example.ui.theme.DarkBorder
+import com.example.ui.theme.DarkCard
 import com.example.ui.theme.DarkMidnight
 import com.example.ui.theme.DeepEmerald
 import com.example.ui.theme.DeepRoyalBlue
@@ -106,9 +122,20 @@ fun GamesScreen(
     uiState: ClipCashUiState,
     onCoinCatcherFinished: (Int) -> Unit,
     onSpinWheelResult: (prizeCoins: Int, usedFreeSpin: Boolean) -> Unit,
+    onArcadeGameFinished: (gameTitle: String, coinsWon: Int) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var showCatcherDialog by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf(ArcadeCategory.ALL) }
+    var activeArcadeGame by remember { mutableStateOf<ArcadeGameType?>(null) }
+
+    val filteredExtraGames = remember(selectedCategory) {
+        if (selectedCategory == ArcadeCategory.ALL) {
+            ArcadeGameType.entries
+        } else {
+            ArcadeGameType.entries.filter { it.category == selectedCategory }
+        }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -148,7 +175,7 @@ fun GamesScreen(
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = "Play Coin Catcher or spin the Lucky Wheel to stack instant coins.",
+                            text = "10 mini-games across Arcade, Puzzle, Brain & Luck — stack instant coins!",
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.88f)
                         )
@@ -157,85 +184,132 @@ fun GamesScreen(
             }
         }
 
-        // Mini-game 1: Coin Catcher Card
+        // Category Filter Row
         item {
-            Card(
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, DarkBorder),
-                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                items(ArcadeCategory.entries) { category ->
+                    val isSelected = selectedCategory == category
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { selectedCategory = category },
+                        label = {
+                            Text(
+                                text = category.label,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CashEmerald,
+                            selectedLabelColor = InkNavy,
+                            containerColor = DarkCard,
+                            labelColor = Color.White
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = isSelected,
+                            borderColor = DarkBorder
+                        ),
+                        shape = CircleShape,
+                        modifier = Modifier.testTag("arcade_filter_${category.name.lowercase()}")
+                    )
+                }
+            }
+        }
+
+        // Mini-game 1: Coin Catcher Card
+        if (selectedCategory == ArcadeCategory.ALL || selectedCategory == ArcadeCategory.ARCADE) {
+            item(key = "coin_catcher") {
+                Card(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, DarkBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(CashEmerald.copy(alpha = 0.16f)),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Filled.SportsEsports,
-                                    contentDescription = null,
-                                    tint = CashEmerald
-                                )
-                            }
-                            Column {
-                                Text(
-                                    text = "Coin Catcher Blitz",
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-                                Text(
-                                    text = "15s Reflex Game · Up to +250 Coins",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(CashEmerald.copy(alpha = 0.16f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SportsEsports,
+                                        contentDescription = null,
+                                        tint = CashEmerald
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Coin Catcher Blitz",
+                                        style = MaterialTheme.typography.titleLarge
+                                    )
+                                    Text(
+                                        text = "15s Reflex Game · Up to +250 Coins",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = "Tap falling gold coins (+10) and green cash bills (+25) before they drop! Avoid red hazard bombs.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "Tap falling gold coins (+10) and green cash bills (+25) before they drop! Avoid red hazard bombs.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(14.dp))
 
-                    Button(
-                        onClick = { showCatcherDialog = true },
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = CashEmerald,
-                            contentColor = InkNavy
-                        ),
-                        modifier = Modifier
-                            .testTag("start_catcher_button")
-                            .fillMaxWidth()
-                            .height(48.dp)
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Play Coin Catcher (Free)", fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = { showCatcherDialog = true },
+                            shape = CircleShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CashEmerald,
+                                contentColor = InkNavy
+                            ),
+                            modifier = Modifier
+                                .testTag("start_catcher_button")
+                                .fillMaxWidth()
+                                .height(48.dp)
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Play Coin Catcher (Free)", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
         }
 
         // Mini-game 2: Lucky Spin Wheel Card
-        item {
-            LuckySpinCard(
-                coinBalance = uiState.wallet.coinBalance,
-                isFreeSpinAvailable = uiState.isFreeSpinAvailable,
-                onSpinComplete = onSpinWheelResult
+        if (selectedCategory == ArcadeCategory.ALL || selectedCategory == ArcadeCategory.LUCK) {
+            item(key = "lucky_wheel") {
+                LuckySpinCard(
+                    coinBalance = uiState.wallet.coinBalance,
+                    isFreeSpinAvailable = uiState.isFreeSpinAvailable,
+                    onSpinComplete = onSpinWheelResult
+                )
+            }
+        }
+
+        // Mini-games 3..10: 8 Additional Distinct Game Types
+        items(filteredExtraGames, key = { it.name }) { game ->
+            ArcadeGameCard(
+                game = game,
+                onPlayClick = { activeArcadeGame = game }
             )
         }
     }
@@ -248,6 +322,117 @@ fun GamesScreen(
                 showCatcherDialog = false
             }
         )
+    }
+
+    activeArcadeGame?.let { game ->
+        val finishGame: (Int) -> Unit = { coins ->
+            onArcadeGameFinished(game.title, coins)
+            activeArcadeGame = null
+        }
+        val dismissGame: () -> Unit = { activeArcadeGame = null }
+
+        when (game) {
+            ArcadeGameType.MEMORY_MATCH -> MemoryMatchDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.BALLOON_POP -> BalloonPopDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.MATH_DASH -> MathDashDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.REACTION_FLASH -> ReactionFlashDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.SCRATCH_WIN -> ScratchCardDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.SLIDE_MERGE -> SlideMergeDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.COLOR_BEAT -> ColorBeatDialog(onDismiss = dismissGame, onCollect = finishGame)
+            ArcadeGameType.WHACK_A_COIN -> WhackCoinDialog(onDismiss = dismissGame, onCollect = finishGame)
+        }
+    }
+}
+
+@Composable
+private fun ArcadeGameCard(
+    game: ArcadeGameType,
+    onPlayClick: () -> Unit
+) {
+    val useDarkButtonText = game.accentColor == CashEmerald || game.accentColor == CoinGold || game.accentColor == CoinAmber
+
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, DarkBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(game.accentColor.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = game.icon,
+                            contentDescription = null,
+                            tint = game.accentColor
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = game.title,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        Text(
+                            text = game.subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = game.accentColor.copy(alpha = 0.16f)
+                ) {
+                    Text(
+                        text = game.genreTag,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = game.accentColor,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = game.description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(14.dp))
+
+            Button(
+                onClick = onPlayClick,
+                shape = CircleShape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = game.accentColor,
+                    contentColor = if (useDarkButtonText) InkNavy else Color.White
+                ),
+                modifier = Modifier
+                    .testTag(game.testTag)
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(game.ctaLabel, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
@@ -337,9 +522,9 @@ private fun LuckySpinCard(
                         center = center
                     )
 
+                    val sweep = 360f / WHEEL_PRIZES.size
                     rotate(degrees = animatedRotation, pivot = center) {
-                        val sweep = 360f / WHEEL_PRIZES.size
-                        WHEEL_PRIZES.forEachIndexed { index, prize ->
+                        WHEEL_PRIZES.forEachIndexed { index, _ ->
                             val startAngle = -90f - (sweep / 2f) + index * sweep
                             drawArc(
                                 color = WHEEL_COLORS[index % WHEEL_COLORS.size],
@@ -349,14 +534,18 @@ private fun LuckySpinCard(
                                 topLeft = topLeft,
                                 size = wheelSize
                             )
-                            drawWheelLabel(
-                                textMeasurer = textMeasurer,
-                                label = "+$prize",
-                                center = center,
-                                radius = radius * 0.65f,
-                                angleDeg = -90f + index * sweep
-                            )
                         }
+                    }
+
+                    // Draw labels upright after rotating slices so numbers are never upside down
+                    WHEEL_PRIZES.forEachIndexed { index, prize ->
+                        drawWheelLabel(
+                            textMeasurer = textMeasurer,
+                            label = "+$prize",
+                            center = center,
+                            radius = radius * 0.64f,
+                            angleDeg = -90f + index * sweep + animatedRotation
+                        )
                     }
 
                     // Center hub
@@ -444,7 +633,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWheelLabel(
         style = TextStyle(
             color = Color.White,
             fontSize = 13.sp,
-            fontWeight = FontWeight.ExtraBold
+            fontWeight = FontWeight.ExtraBold,
+            shadow = Shadow(
+                color = Color.Black.copy(alpha = 0.45f),
+                offset = Offset(0f, 1.5f),
+                blurRadius = 3f
+            )
         )
     )
     drawText(

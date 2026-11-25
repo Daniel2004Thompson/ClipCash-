@@ -303,7 +303,8 @@ fun ClipCashApp(
                                         MainTab.GAMES -> GamesScreen(
                                             uiState = uiState,
                                             onCoinCatcherFinished = viewModel::recordCoinCatcherScore,
-                                            onSpinWheelResult = viewModel::spinLuckyWheel
+                                            onSpinWheelResult = viewModel::spinLuckyWheel,
+                                            onArcadeGameFinished = viewModel::recordArcadeGameResult
                                         )
                                         MainTab.QUESTS -> QuestsScreen(
                                             uiState = uiState,

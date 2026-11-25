@@ -573,7 +573,10 @@ class ClipCashRepository(
         return reward
     }
 
-    suspend fun recordCoinCatcherGame(coinsWon: Int): Int {
+    suspend fun recordCoinCatcherGame(coinsWon: Int): Int =
+        recordArcadeGameReward(gameTitle = "Coin Catcher Run", coinsWon = coinsWon)
+
+    suspend fun recordArcadeGameReward(gameTitle: String, coinsWon: Int): Int {
         val safeCoins = coinsWon.coerceAtLeast(0)
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
@@ -589,7 +592,7 @@ class ClipCashRepository(
             newWallet = updated
             if (safeCoins > 0) {
                 val tx = TransactionEntity(
-                    title = "Coin Catcher Run",
+                    title = gameTitle,
                     subtitle = "Arcade mini-game reward",
                     amountCoins = safeCoins,
                     type = TransactionType.GAME.name
