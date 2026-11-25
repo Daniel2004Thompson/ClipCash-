@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">ClipCash</string>
+    <string name="tagline">Watch Videos. Play Mini Games. Earn Rewards.</string>
+    <string name="get_started">Get Started</string>
+    <string name="nav_watch">Watch</string>
+    <string name="nav_games">Games</string>
+    <string name="nav_tasks">Quests</string>
+    <string name="nav_wallet">Wallet</string>
+    <string name="watch_now">Watch &amp; Earn</string>
+    <string name="daily_bonus">Daily Check-In</string>
+    <string name="claim_bonus">Claim +50</string>
+    <string name="claimed_today">Claimed Today</string>
+    <string name="cash_out">Cash Out</string>
+    <string name="coin_catcher_title">Coin Catcher</string>
+    <string name="lucky_spin_title">Lucky Spin</string>
+</resources>

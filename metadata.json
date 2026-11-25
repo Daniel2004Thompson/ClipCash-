@@ -1,0 +1,6 @@
+{
+  "name": "ClipCash",
+  "description": "Watch videos, complete quests, and earn rewards with ClipCash.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
