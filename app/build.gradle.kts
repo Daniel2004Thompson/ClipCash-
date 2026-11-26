@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.clipcash.vkmxqr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "4.0.0"
+    versionCode = 5
+    versionName = "5.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "SUPABASE_CENTRAL_POINT_URL", "\"https://vidvozabnlngqhnxrhmf.supabase.co/functions/v1/central-point\"")
