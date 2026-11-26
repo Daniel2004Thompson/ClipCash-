@@ -2,12 +2,16 @@ name: Build Debug APK
 
 on:
   push:
+    tags-ignore:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
   build-apk:
     name: Build Android Debug APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -52,9 +56,41 @@ jobs:
             gradle assembleDebug --stacktrace
           fi
 
+      - name: Read app version
+        id: app_version
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: clipcash-debug-apk-v5.0.0
+          name: clipcash-debug-apk-${{ steps.app_version.outputs.tag }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.app_version.outputs.tag }}
+          VERSION: ${{ steps.app_version.outputs.version }}
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "Debug APK not found"
+            exit 1
+          fi
+          RELEASE_APK="ClipCash-${TAG}.apk"
+          cp "$APK_FILE" "$RELEASE_APK"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RELEASE_APK" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$RELEASE_APK" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ClipCash $TAG" \
+              --notes "Automated APK build for ClipCash $TAG (commit ${GITHUB_SHA::7})." \
+              --target "$GITHUB_REF_NAME"
+          fi

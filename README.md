@@ -107,10 +107,9 @@ gradle :app:testDebugUnitTest
 
 ---
 
-## Download APK via GitHub Actions
+## Download APK via GitHub Releases & Actions
 
-This repository includes `.github/workflows/build-apk.yml`, which automatically builds a debug APK on every push and also supports manual runs (`workflow_dispatch`).
+This repository includes `.github/workflows/build-apk.yml`, which automatically builds a debug APK on every branch push (and manual `workflow_dispatch` runs), publishes a public **GitHub Release** for each version, and uploads an Actions artifact.
 
-1. Open the **Actions** tab in your GitHub repository.
-2. Select the latest **Build Debug APK** workflow run (or click **Run workflow** to trigger one manually).
-3. Download the **`clipcash-debug-apk-v5.0.0`** artifact from the workflow summary to install the APK on an Android device.
+1. Open the **Releases** page on the right side of the GitHub repository to download any published version directly (e.g. **`ClipCash-v5.0.0.apk`**) — no GitHub login required.
+2. You can also open the **Actions** tab, select any **Build Debug APK** run, and download **`clipcash-debug-apk-v5.0.0`** from **Artifacts**.
