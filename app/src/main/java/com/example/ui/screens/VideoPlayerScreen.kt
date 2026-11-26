@@ -72,7 +72,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -83,8 +83,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -101,7 +99,6 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Size as CoilSize
 import com.example.model.VideoClip
-import com.example.ui.components.CoinBadge
 import com.example.ui.components.RewardToastBanner
 import com.example.ui.theme.CashEmerald
 import com.example.ui.theme.CoinGold
@@ -136,15 +133,12 @@ fun VideoPlayerScreen(
     allClips: List<VideoClip>,
     isLoadingMore: Boolean,
     onLoadMoreClips: () -> Unit,
-    onRewardEarned: (VideoClip) -> Unit,
     onSelectNextClip: (VideoClip) -> Unit,
     onBack: () -> Unit,
     feedbackBanner: RewardFeedback? = null,
     errorMessage: String? = null,
     onDismissBanner: () -> Unit = {},
-    onVideoPlaying: (VideoClip) -> Unit = {},
-    onVideoEnded: (VideoClip) -> Unit = {},
-    onResetWatchSession: () -> Unit = {}
+    onShortNaturalBreak: () -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
 
@@ -162,13 +156,8 @@ fun VideoPlayerScreen(
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val elapsedByClipId = remember { mutableStateMapOf<String, Int>() }
-    val rewardedByClipId = remember { mutableStateMapOf<String, Boolean>() }
-
     val activeClip = clips.getOrNull(pagerState.settledPage) ?: clip
     val currentActiveClip by rememberUpdatedState(activeClip)
-    val isRpcRewardClip = !activeClip.remoteUuid.isNullOrBlank() && activeClip.rewardEligible
-    val activeRewardClaimed = rewardedByClipId[activeClip.id] == true
     val directMediaUrl = remember(activeClip.videoUrl) {
         activeClip.videoUrl?.takeIf { url ->
             val lower = url.lowercase()
@@ -189,17 +178,23 @@ fun VideoPlayerScreen(
     var playerErrorMessage by remember { mutableStateOf<String?>(null) }
     var showSlowLoadActions by remember { mutableStateOf(false) }
     var showTapPulse by remember { mutableStateOf(false) }
+    var lastBreakDispatchMs by remember { mutableLongStateOf(0L) }
 
-    val onPlayingUpdated by rememberUpdatedState(onVideoPlaying)
-    val onEndedUpdated by rememberUpdatedState(onVideoEnded)
-    val onResetSessionUpdated by rememberUpdatedState(onResetWatchSession)
+    val onNaturalBreakUpdated by rememberUpdatedState(onShortNaturalBreak)
+
+    fun dispatchNaturalBreakOnce() {
+        val now = System.currentTimeMillis()
+        if (now - lastBreakDispatchMs >= 1500L) {
+            lastBreakDispatchMs = now
+            onNaturalBreakUpdated()
+        }
+    }
 
     val isActivePlaying = currentPlaybackState == ShortPlaybackState.PLAYING &&
         !pagerState.isScrollInProgress
 
-    // Reset session & check device connectivity whenever user settles on a new Short
+    // Check device connectivity whenever user settles on a new Short
     LaunchedEffect(activeClip.id, playerReloadNonce) {
-        onResetSessionUpdated()
         isDeviceOnline = isInternetAvailable(context)
         useWebFallback = directMediaUrl != null
         activeNativePlayer = null
@@ -214,11 +209,12 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Pause fallback WebView when app moves to background
-    DisposableEffect(lifecycleOwner, webController) {
+    // Pause both native YouTubePlayer and fallback WebView when Activity pauses (e.g. interstitial opens or background)
+    DisposableEffect(lifecycleOwner, webController, activeNativePlayer) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    activeNativePlayer?.pause()
                     webController?.onLifecyclePause()
                 }
                 Lifecycle.Event.ON_RESUME -> {
@@ -305,28 +301,6 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Mark clip rewarded when server RPC toast confirms coins earned
-    LaunchedEffect(feedbackBanner, activeClip.id) {
-        if (feedbackBanner != null && feedbackBanner.coinsDelta > 0 && isRpcRewardClip) {
-            rewardedByClipId[activeClip.id] = true
-        }
-    }
-
-    // Active watch progress timer:
-    // - For non-RPC unlimited Shorts, ticks toward watchTargetSeconds and awards +10 coins
-    // - For public.videos RPC clips, updates visual ring progress until ENDED triggers complete_watch()
-    LaunchedEffect(activeClip.id, isActivePlaying, activeRewardClaimed, isRpcRewardClip) {
-        while (isActivePlaying && !activeRewardClaimed) {
-            delay(100L)
-            val updated = (elapsedByClipId[activeClip.id] ?: 0) + 100
-            elapsedByClipId[activeClip.id] = updated
-            if (!isRpcRewardClip && updated >= activeClip.watchTargetSeconds * 1000) {
-                rewardedByClipId[activeClip.id] = true
-                onRewardEarned(activeClip)
-            }
-        }
-    }
-
     LaunchedEffect(showTapPulse) {
         if (showTapPulse) {
             delay(650L)
@@ -349,12 +323,11 @@ fun VideoPlayerScreen(
                         hasStartedCurrentVideo = true
                         playerErrorMessage = null
                         showSlowLoadActions = false
-                        onPlayingUpdated(clipSnapshot)
                     }
                 }
                 val endedCb by rememberUpdatedState {
                     if (currentActiveClip.id == clipSnapshot.id) {
-                        onEndedUpdated(clipSnapshot)
+                        dispatchNaturalBreakOnce()
                     }
                 }
                 val pausedCb by rememberUpdatedState {
@@ -447,7 +420,6 @@ fun VideoPlayerScreen(
                                     hasStartedCurrentVideo = true
                                     playerErrorMessage = null
                                     showSlowLoadActions = false
-                                    onPlayingUpdated(currentActiveClip)
                                 }
                             },
                             onPaused = { videoId ->
@@ -462,7 +434,7 @@ fun VideoPlayerScreen(
                             },
                             onEnded = { videoId ->
                                 if (videoId == currentActiveClip.videoId) {
-                                    onEndedUpdated(currentActiveClip)
+                                    dispatchNaturalBreakOnce()
                                 }
                             },
                             onMuteChanged = { muted ->
@@ -507,8 +479,6 @@ fun VideoPlayerScreen(
         ) { pageIndex ->
             val pageClip = clips[pageIndex]
             val isSettledActive = pagerState.settledPage == pageIndex
-            val elapsedMs = elapsedByClipId[pageClip.id] ?: 0
-            val rewardClaimed = rewardedByClipId[pageClip.id] == true
             val isPagePlaying = isSettledActive && isActivePlaying
             val showThumbnailCover = !isSettledActive ||
                 pagerState.isScrollInProgress ||
@@ -526,8 +496,6 @@ fun VideoPlayerScreen(
                 showSlowLoadActions = isSettledActive && showSlowLoadActions,
                 showTapPulse = isSettledActive && showTapPulse,
                 playerErrorMessage = if (isSettledActive) playerErrorMessage else null,
-                elapsedWatchMs = elapsedMs,
-                rewardClaimed = rewardClaimed,
                 isLoadingMore = isLoadingMore,
                 onTapScreen = {
                     val nativePlayer = activeNativePlayer
@@ -1117,8 +1085,6 @@ private fun ShortOverlayPage(
     showSlowLoadActions: Boolean,
     showTapPulse: Boolean,
     playerErrorMessage: String?,
-    elapsedWatchMs: Int,
-    rewardClaimed: Boolean,
     isLoadingMore: Boolean,
     onTapScreen: () -> Unit,
     onToggleMute: () -> Unit,
@@ -1127,12 +1093,6 @@ private fun ShortOverlayPage(
     onSwipePrevious: () -> Unit,
     onSwipeNext: () -> Unit
 ) {
-    val isRpcReward = !clip.remoteUuid.isNullOrBlank() && clip.rewardEligible
-    val targetSeconds = if (isRpcReward) clip.durationSeconds.coerceAtLeast(clip.watchTargetSeconds) else clip.watchTargetSeconds
-    val targetMs = targetSeconds * 1000
-    val progressRatio = (elapsedWatchMs.toFloat() / targetMs.toFloat()).coerceIn(0f, 1f)
-    val animatedProgress by animateFloatAsState(targetValue = progressRatio, label = "short_watch_ring")
-
     Box(modifier = Modifier.fillMaxSize()) {
         // Cover thumbnail only during swipes / initial buffering so live video shines through once started
         if (showThumbnailCover) {
@@ -1285,7 +1245,7 @@ private fun ShortOverlayPage(
             }
         }
 
-        // Top Bar: Back + Live Watch-to-Earn Ring + Unlimited Counter
+        // Top Bar: Back + Short Status Counter
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1310,74 +1270,28 @@ private fun ShortOverlayPage(
                 )
             }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            Column(
                 modifier = Modifier
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.52f))
-                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.End
             ) {
-                Box(
-                    modifier = Modifier.size(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        drawArc(
-                            color = Color.White.copy(alpha = 0.25f),
-                            startAngle = 0f,
-                            sweepAngle = 360f,
-                            useCenter = false,
-                            style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
-                        )
-                        drawArc(
-                            color = if (rewardClaimed) CashEmerald else CoinGold,
-                            startAngle = -90f,
-                            sweepAngle = 360f * animatedProgress,
-                            useCenter = false,
-                            style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
-                        )
-                    }
-                    if (rewardClaimed) {
-                        Icon(
-                            imageVector = Icons.Filled.CheckCircle,
-                            contentDescription = "Reward Claimed",
-                            tint = CashEmerald,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    } else {
-                        val secLeft = (((targetMs - elapsedWatchMs).coerceAtLeast(0)) / 1000) + 1
-                        Text(
-                            text = "${secLeft}s",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White
-                        )
-                    }
-                }
-
-                Column {
-                    Text(
-                        text = when {
-                            !clip.rewardEligible -> "Featured Short"
-                            rewardClaimed -> "Earned +${clip.rewardCoins} Coins!"
-                            else -> "Earning +${clip.rewardCoins} Coins"
-                        },
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (rewardClaimed) CashEmerald else Color.White
-                    )
-                    Text(
-                        text = when {
-                            !isDeviceOnline -> "No internet connection"
-                            rewardClaimed -> "Swipe up for next Short"
-                            isPlaying && isRpcReward -> "Finish Short #${pageIndex + 1} to claim"
-                            isPlaying -> "Watching Short #${pageIndex + 1}"
-                            isLoadingMore -> "Loading more Shorts..."
-                            else -> "Loading Short..."
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.78f)
-                    )
-                }
+                Text(
+                    text = "Short #${pageIndex + 1}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White
+                )
+                Text(
+                    text = when {
+                        !isDeviceOnline -> "No internet connection"
+                        isPlaying -> "Playing"
+                        isLoadingMore -> "Loading more Shorts..."
+                        else -> "Tap to play/pause"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.78f)
+                )
             }
         }
 
@@ -1390,32 +1304,6 @@ private fun ShortOverlayPage(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (rewardClaimed) CashEmerald.copy(alpha = 0.28f)
-                            else Color.Black.copy(alpha = 0.5f)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CoinBadge(sizeDp = 28)
-                }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = when {
-                        !clip.rewardEligible -> "Watch"
-                        rewardClaimed -> "Paid"
-                        else -> "+${clip.rewardCoins}"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = if (rewardClaimed) CashEmerald else Color.White
-                )
-            }
-
             ShortsRailButton(
                 icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 label = if (isPlaying) "Pause" else "Play",
@@ -1458,7 +1346,7 @@ private fun ShortOverlayPage(
             )
         }
 
-        // Bottom-Left Shorts Info + Celebration
+        // Bottom-Left Shorts Info
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -1467,29 +1355,6 @@ private fun ShortOverlayPage(
                 .padding(start = 16.dp, end = 86.dp, bottom = 18.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            AnimatedVisibility(
-                visible = rewardClaimed,
-                enter = fadeIn() + scaleIn()
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = CashEmerald.copy(alpha = 0.24f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        CoinBadge(sizeDp = 18)
-                        Text(
-                            text = "+${clip.rewardCoins} Coins Credited!",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = CashEmerald
-                        )
-                    }
-                }
-            }
-
             if (isMuted && isPlaying) {
                 Surface(
                     shape = CircleShape,
@@ -1545,18 +1410,6 @@ private fun ShortOverlayPage(
                 overflow = TextOverflow.Ellipsis
             )
         }
-
-        // Bottom edge Shorts progress bar
-        LinearProgressIndicator(
-            progress = { animatedProgress },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding(),
-            color = if (rewardClaimed) CashEmerald else ElectricBlue,
-            trackColor = Color.White.copy(alpha = 0.22f)
-        )
     }
 }
 

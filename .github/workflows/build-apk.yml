@@ -63,11 +63,23 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Package versioned APK
+        id: package_apk
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "Debug APK not found"
+            exit 1
+          fi
+          VERSIONED_APK="ClipCash-${{ steps.app_version.outputs.tag }}.apk"
+          cp "$APK_FILE" "$VERSIONED_APK"
+          echo "apk=$VERSIONED_APK" >> "$GITHUB_OUTPUT"
+
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v6
         with:
           name: clipcash-debug-apk-${{ steps.app_version.outputs.tag }}
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.package_apk.outputs.apk }}
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -76,14 +88,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.app_version.outputs.tag }}
           VERSION: ${{ steps.app_version.outputs.version }}
+          RELEASE_APK: ${{ steps.package_apk.outputs.apk }}
         run: |
-          APK_FILE=$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | head -n 1)
-          if [ -z "$APK_FILE" ]; then
-            echo "Debug APK not found"
+          if [ ! -f "$RELEASE_APK" ]; then
+            echo "Packaged APK $RELEASE_APK not found"
             exit 1
           fi
-          RELEASE_APK="ClipCash-${TAG}.apk"
-          cp "$APK_FILE" "$RELEASE_APK"
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$RELEASE_APK" --repo "$GITHUB_REPOSITORY" --clobber

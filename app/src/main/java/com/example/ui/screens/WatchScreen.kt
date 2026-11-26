@@ -10,14 +10,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -39,11 +44,13 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SentimentSatisfiedAlt
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -104,6 +111,7 @@ import com.example.ui.theme.CoinGold
 import com.example.ui.theme.DarkBorder
 import com.example.ui.theme.DarkCard
 import com.example.ui.theme.DarkElevated
+import com.example.ui.theme.DarkMidnight
 import com.example.ui.theme.DarkNavBar
 import com.example.ui.theme.DarkTextMuted
 import com.example.ui.theme.DeepEmerald
@@ -116,12 +124,15 @@ import com.example.viewmodel.ClipCashUiState
 fun WatchScreen(
     uiState: ClipCashUiState,
     isWideLayout: Boolean,
+    isRewardedAdLoaded: Boolean,
+    rewardedCooldownSeconds: Int,
+    onWatchRewardedAd: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onSubmitSearch: () -> Unit,
     onSelectCategory: (ClipCategory) -> Unit,
     onLoadMoreClips: () -> Unit,
-    onClaimCheckIn: () -> Unit,
     onWatchClip: (VideoClip) -> Unit,
+    bannerContent: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val columns = if (isWideLayout) 3 else 2
@@ -140,23 +151,32 @@ fun WatchScreen(
         }
     }
 
-    LazyVerticalGrid(
-        state = gridState,
-        columns = GridCells.Fixed(columns),
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Hero Daily Check-In Card
-        item(span = { GridItemSpan(columns) }) {
-            DailyCheckInCard(
-                streakDays = uiState.wallet.streakDays,
-                isAvailable = uiState.isCheckInAvailable,
-                clipsWatched = uiState.wallet.clipsWatchedCount,
-                onClaim = onClaimCheckIn
-            )
-        }
+    val showBanner = bannerContent != null &&
+        !uiState.isSearchingClips &&
+        uiState.searchError == null &&
+        uiState.clips.isNotEmpty()
+
+    Column(modifier = modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(columns),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Hero Unity Rewarded Ad Card ("Watch an ad to earn 10 coins")
+            item(span = { GridItemSpan(columns) }) {
+                RewardedAdEarnCard(
+                    adsWatchedToday = uiState.coinStatus.adsWatchedToday,
+                    dailyCap = uiState.coinStatus.dailyCap,
+                    isRewardedAdLoaded = isRewardedAdLoaded,
+                    cooldownSeconds = rewardedCooldownSeconds,
+                    onWatchRewardedAd = onWatchRewardedAd
+                )
+            }
 
         // ClipCash Shorts Header + Search Bar & Category Chips
         item(span = { GridItemSpan(columns) }) {
@@ -435,6 +455,25 @@ fun WatchScreen(
                 }
             }
         }
+        }
+
+        if (showBanner && bannerContent != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkMidnight)
+                    .windowInsetsPadding(
+                        WindowInsets.systemBars.only(
+                            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
+                        )
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(Modifier.height(16.dp))
+                bannerContent()
+                Spacer(Modifier.height(16.dp))
+            }
+        }
     }
 }
 
@@ -514,13 +553,22 @@ private fun MiniClipCashPlayMark(sizeDp: Int = 24) {
 }
 
 @Composable
-private fun DailyCheckInCard(
-    streakDays: Int,
-    isAvailable: Boolean,
-    clipsWatched: Int,
-    onClaim: () -> Unit
+private fun RewardedAdEarnCard(
+    adsWatchedToday: Int,
+    dailyCap: Int,
+    isRewardedAdLoaded: Boolean,
+    cooldownSeconds: Int,
+    onWatchRewardedAd: () -> Unit
 ) {
-    val nextBonus = (50 + streakDays * 10).coerceAtMost(120)
+    val capReached = adsWatchedToday >= dailyCap
+    val isButtonEnabled = isRewardedAdLoaded && cooldownSeconds == 0 && !capReached
+    val statusReason = when {
+        capReached -> "Daily limit reached ($adsWatchedToday/$dailyCap rewarded ads used today). Come back tomorrow."
+        cooldownSeconds > 0 -> "Cooldown active: please wait ${cooldownSeconds}s before your next rewarded ad."
+        !isRewardedAdLoaded -> "Rewarded ad is loading. The button will enable as soon as an ad is ready."
+        else -> "Complete the full rewarded video ad to earn 10 coins ($adsWatchedToday/$dailyCap used today)."
+    }
+
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -550,7 +598,6 @@ private fun DailyCheckInCard(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Top translucent day badge
                     Row(
                         modifier = Modifier
                             .clip(CircleShape)
@@ -561,13 +608,13 @@ private fun DailyCheckInCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.CalendarToday,
+                            imageVector = Icons.Filled.Schedule,
                             contentDescription = null,
                             tint = Color.White,
                             modifier = Modifier.size(13.dp)
                         )
                         Text(
-                            text = "DAILY CHECK-IN · DAY ${streakDays + if (isAvailable) 1 else 0}",
+                            text = "REWARDED AD · $adsWatchedToday / $dailyCap TODAY",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.5.sp
@@ -576,104 +623,60 @@ private fun DailyCheckInCard(
                         )
                     }
 
-                    // Bold Headline with bright green +50
-                    if (isAvailable) {
-                        Text(
-                            text = buildAnnotatedString {
-                                withStyle(SpanStyle(color = Color.White)) {
-                                    append("Claim ")
-                                }
-                                withStyle(SpanStyle(color = BrightMint)) {
-                                    append("+$nextBonus")
-                                }
-                                withStyle(SpanStyle(color = Color.White)) {
-                                    append(" Bonus\nCoins")
-                                }
-                            },
-                            style = MaterialTheme.typography.headlineMedium.copy(
-                                fontSize = 23.sp,
-                                lineHeight = 27.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
+                    Text(
+                        text = buildAnnotatedString {
+                            withStyle(SpanStyle(color = Color.White)) {
+                                append("Earn ")
+                            }
+                            withStyle(SpanStyle(color = BrightMint)) {
+                                append("+10")
+                            }
+                            withStyle(SpanStyle(color = Color.White)) {
+                                append(" Coins")
+                            }
+                        },
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontSize = 23.sp,
+                            lineHeight = 27.sp,
+                            fontWeight = FontWeight.ExtraBold
                         )
-                    } else {
-                        Text(
-                            text = "Streak Active!\n($clipsWatched clips watched)",
-                            style = MaterialTheme.typography.headlineSmall.copy(
-                                fontSize = 21.sp,
-                                lineHeight = 26.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            ),
-                            color = Color.White
-                        )
-                    }
+                    )
 
                     Text(
-                        text = "Watch any ClipCash video for 10s to earn instant coins.",
+                        text = statusReason,
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontSize = 12.5.sp,
                             lineHeight = 17.sp
                         ),
-                        color = Color.White.copy(alpha = 0.9f)
+                        color = Color.White.copy(alpha = 0.92f)
                     )
 
-                    // Emerald CTA Pill matching mockup
-                    Box(
-                        modifier = Modifier
-                            .testTag("daily_checkin_button")
-                            .clip(CircleShape)
-                            .background(
-                                if (isAvailable) {
-                                    Brush.horizontalGradient(listOf(Color(0xFF1EEB87), Color(0xFF0DC168)))
-                                } else {
-                                    Brush.horizontalGradient(listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.16f)))
-                                }
-                            )
-                            .border(1.dp, Color.White.copy(alpha = 0.26f), CircleShape)
-                            .clickable(enabled = isAvailable, onClick = onClaim)
-                            .padding(horizontal = 14.dp, vertical = 9.dp)
+                    Button(
+                        onClick = onWatchRewardedAd,
+                        enabled = isButtonEnabled,
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CashEmerald,
+                            contentColor = InkNavy,
+                            disabledContainerColor = Color.White.copy(alpha = 0.22f),
+                            disabledContentColor = Color.White.copy(alpha = 0.78f)
+                        ),
+                        modifier = Modifier.testTag("watch_ad_earn_coins_button")
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (isAvailable) {
-                                CoinBadge(sizeDp = 22)
-                                Text(
-                                    text = "+$nextBonus",
-                                    style = MaterialTheme.typography.labelLarge.copy(
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.ExtraBold
-                                    ),
-                                    color = InkNavy
-                                )
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "Claim Bonus",
-                                    tint = InkNavy,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Filled.CheckCircle,
-                                    contentDescription = "Claimed",
-                                    tint = BrightMint,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Text(
-                                    text = "Claimed Today",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = Color.White
-                                )
-                            }
-                        }
+                        CoinBadge(sizeDp = 18)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Watch an ad to earn 10 coins",
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        )
                     }
                 }
 
                 Spacer(Modifier.width(8.dp))
 
-                // Right-side 3D Gold Coin + Glowing Cyan Pedestal + +50 floating badge
-                HeroCoinPedestalGraphic(bonusAmount = nextBonus)
+                HeroCoinPedestalGraphic(bonusAmount = 10)
             }
         }
     }
@@ -916,29 +919,7 @@ private fun VideoClipCard(
                 )
             }
 
-            // Top-Right Emerald Coin Reward Pill
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(9.dp)
-                    .clip(CircleShape)
-                    .background(CashEmerald)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                CoinBadge(sizeDp = 15)
-                Text(
-                    text = "+${clip.rewardCoins}",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    ),
-                    color = InkNavy
-                )
-            }
-
-            // Bottom Portrait Title + Metadata Row matching mockup
+            // Bottom Portrait Title + Metadata Row
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -970,20 +951,16 @@ private fun VideoClipCard(
                         Icon(
                             imageVector = Icons.Filled.Visibility,
                             contentDescription = null,
-                            tint = if (progress != null && progress.watchCount > 0) CashEmerald else Color(0xFFB3C5EB),
+                            tint = Color(0xFFB3C5EB),
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = if (progress != null && progress.watchCount > 0) {
-                                "Watched ${progress.watchCount}x"
-                            } else {
-                                "Instant +${clip.rewardCoins}"
-                            },
+                            text = "YouTube Short",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold
                             ),
-                            color = if (progress != null && progress.watchCount > 0) CashEmerald else Color.White.copy(alpha = 0.88f)
+                            color = Color.White.copy(alpha = 0.88f)
                         )
                     }
 

@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.clipcash.vkmxqr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "5.0.0"
+    versionCode = 6
+    versionName = "6.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "SUPABASE_CENTRAL_POINT_URL", "\"https://vidvozabnlngqhnxrhmf.supabase.co/functions/v1/central-point\"")
@@ -127,6 +127,7 @@ dependencies {
   // implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
   implementation(libs.play.services.ads)
+  implementation("com.unity3d.ads:unity-ads:4.22.0")
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:13.0.0")

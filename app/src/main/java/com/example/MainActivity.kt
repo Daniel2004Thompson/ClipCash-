@@ -2,7 +2,7 @@ package com.example
 
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
-import android.widget.Toast
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -46,6 +48,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -69,9 +72,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.example.ads.BannerAd
-import com.example.ads.InterstitialManager
-import com.example.ads.RewardedManager
 import com.example.ads.findActivity
 import com.example.model.ClipCatalog
 import com.example.ui.components.ClipCashTopBar
@@ -124,6 +124,13 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (ev != null) {
+            (application as? ClipCashApp)?.adManager?.recordUserTouch(System.currentTimeMillis())
+        }
+        return super.dispatchTouchEvent(ev)
+    }
 }
 
 @Composable
@@ -135,17 +142,36 @@ fun ClipCashRoot(
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
-    val interstitial = remember { InterstitialManager(context.applicationContext).also { it.load() } }
-    val rewarded = remember { RewardedManager(context.applicationContext).also { it.load() } }
+    val adManager = remember(context) { (context.applicationContext as ClipCashApp).adManager }
+    val isRewardedAdLoaded by adManager.isRewardedLoaded.collectAsStateWithLifecycle()
 
-    DisposableEffect(lifecycleOwner) {
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val rewardedCooldownSeconds = uiState.coinStatus.cooldownSecondsRemaining(nowMs)
+
+    LaunchedEffect(uiState.coinStatus.lastRewardedAtMs) {
+        nowMs = System.currentTimeMillis()
+        while (uiState.coinStatus.cooldownSecondsRemaining(nowMs) > 0) {
+            delay(1000L)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, adManager) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshWalletSyncIfStale()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    adManager.setAppInForeground(true)
+                    viewModel.refreshWalletSyncIfStale()
+                }
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    adManager.setAppInForeground(false)
+                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            adManager.setAppInForeground(false)
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
@@ -197,10 +223,10 @@ fun ClipCashRoot(
 
                     Scaffold(
                         containerColor = DarkMidnight,
-                        contentWindowInsets = WindowInsets.navigationBars,
+                        contentWindowInsets = WindowInsets.systemBars,
                         topBar = {
                             ClipCashTopBar(
-                                coinBalance = uiState.wallet.coinBalance,
+                                coinBalance = uiState.coinStatus.balance,
                                 streakDays = uiState.wallet.streakDays,
                                 onWalletClick = { currentTab = MainTab.WALLET }
                             )
@@ -208,7 +234,6 @@ fun ClipCashRoot(
                         bottomBar = {
                             if (!isWide) {
                                 Column {
-                                    BannerAd()
                                     HorizontalDivider(thickness = 1.dp, color = Color(0xFF1A2A50))
                                     NavigationBar(
                                         containerColor = DarkNavBar,
@@ -252,6 +277,7 @@ fun ClipCashRoot(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(innerPadding)
+                                .consumeWindowInsets(innerPadding)
                         ) {
                             if (isWide) {
                                 NavigationRail(
@@ -303,48 +329,55 @@ fun ClipCashRoot(
                                             MainTab.WATCH -> WatchScreen(
                                                 uiState = uiState,
                                                 isWideLayout = isWide,
+                                                isRewardedAdLoaded = isRewardedAdLoaded,
+                                                rewardedCooldownSeconds = rewardedCooldownSeconds,
+                                                onWatchRewardedAd = {
+                                                    val currentNow = System.currentTimeMillis()
+                                                    nowMs = currentNow
+                                                    when {
+                                                        uiState.coinStatus.isDailyCapReached() -> {
+                                                            viewModel.reportAdMessage(
+                                                                "Daily limit reached (${uiState.coinStatus.dailyCap}/day)."
+                                                            )
+                                                        }
+                                                        uiState.coinStatus.cooldownSecondsRemaining(currentNow) > 0 -> {
+                                                            val sec = uiState.coinStatus.cooldownSecondsRemaining(currentNow)
+                                                            viewModel.reportAdMessage("Wait ${sec}s before watching another ad.")
+                                                        }
+                                                        else -> {
+                                                            adManager.showRewardedAd(
+                                                                activity = activity,
+                                                                onCompleted = { viewModel.grantRewardedAdCoins() },
+                                                                onNotCompleted = { reason -> viewModel.reportAdMessage(reason) }
+                                                            )
+                                                        }
+                                                    }
+                                                },
                                                 onSearchQueryChange = viewModel::updateSearchQuery,
                                                 onSubmitSearch = viewModel::submitSearch,
                                                 onSelectCategory = viewModel::selectCategory,
                                                 onLoadMoreClips = viewModel::loadMoreClips,
-                                                onClaimCheckIn = viewModel::claimDailyCheckIn,
                                                 onWatchClip = { clip ->
                                                     viewModel.resetWatchSession()
                                                     navController.navigate("player/${clip.id}")
+                                                },
+                                                bannerContent = activity?.let { act ->
+                                                    { adManager.UnityBannerAd(activity = act) }
                                                 }
                                             )
                                             MainTab.GAMES -> GamesScreen(
                                                 uiState = uiState,
                                                 onCoinCatcherFinished = { score ->
                                                     viewModel.recordCoinCatcherScore(score)
-                                                    activity?.let { interstitial.show(it) }
                                                 },
                                                 onSpinWheelResult = viewModel::spinLuckyWheel,
                                                 onArcadeGameFinished = { gameTitle, coins ->
                                                     viewModel.recordArcadeGameResult(gameTitle, coins)
-                                                    activity?.let { interstitial.show(it) }
                                                 }
                                             )
                                             MainTab.QUESTS -> QuestsScreen(
                                                 uiState = uiState,
-                                                onClaimQuest = viewModel::claimQuest,
-                                                onWatchAdToEarn = {
-                                                    val act = activity
-                                                    val started = if (act != null) {
-                                                        rewarded.show(act) {
-                                                            // TODO: Add your reward logic here
-                                                        }
-                                                    } else {
-                                                        false
-                                                    }
-                                                    if (!started) {
-                                                        Toast.makeText(
-                                                            context,
-                                                            "Ad not ready, try again",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    }
-                                                }
+                                                onClaimQuest = viewModel::claimQuest
                                             )
                                             MainTab.WALLET -> WalletScreen(
                                                 uiState = uiState,
@@ -365,9 +398,6 @@ fun ClipCashRoot(
                                             modifier = Modifier.align(Alignment.TopCenter)
                                         )
                                     }
-                                }
-                                if (isWide) {
-                                    BannerAd()
                                 }
                             }
                         }
@@ -391,7 +421,6 @@ fun ClipCashRoot(
                 allClips = uiState.clips,
                 isLoadingMore = uiState.isLoadingMoreClips,
                 onLoadMoreClips = viewModel::loadMoreClips,
-                onRewardEarned = { watchedClip -> viewModel.recordClipWatched(watchedClip) },
                 onSelectNextClip = { nextClip ->
                     viewModel.resetWatchSession()
                     navController.navigate("player/${nextClip.id}") {
@@ -400,21 +429,14 @@ fun ClipCashRoot(
                 },
                 onBack = {
                     viewModel.resetWatchSession()
-                    val act = activity
-                    if (act != null) {
-                        interstitial.show(act) {
-                            navController.popBackStack()
-                        }
-                    } else {
-                        navController.popBackStack()
-                    }
+                    navController.popBackStack()
                 },
                 feedbackBanner = uiState.feedbackBanner,
                 errorMessage = uiState.errorMessage,
                 onDismissBanner = viewModel::dismissBanner,
-                onVideoPlaying = { watchedClip -> viewModel.onVideoPlaying(watchedClip) },
-                onVideoEnded = { watchedClip -> viewModel.onVideoEnded(watchedClip) },
-                onResetWatchSession = viewModel::resetWatchSession
+                onShortNaturalBreak = {
+                    adManager.onShortWatchedBreak(activity)
+                }
             )
         }
 

@@ -5,9 +5,13 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.ClipCashApp
 import com.example.data.ClipCashDatabase
 import com.example.data.ClipCashRepository
 import com.example.data.ClipProgressEntity
+import com.example.data.CoinRepository
+import com.example.data.CoinRewardStatus
+import com.example.data.DataStoreCoinRepository
 import com.example.data.EmailChangeVerifyResult
 import com.example.data.SupabaseClient
 import com.example.data.SupabaseSession
@@ -83,6 +87,7 @@ data class ClipCashUiState(
     val auth: AuthUiState = AuthUiState(),
     val changeEmail: ChangeEmailUiState = ChangeEmailUiState(),
     val wallet: WalletStateEntity = WalletStateEntity(),
+    val coinStatus: CoinRewardStatus = CoinRewardStatus(),
     val selectedCategory: ClipCategory = ClipCategory.ALL,
     val searchQuery: String = "",
     val clips: List<VideoClip> = ClipCatalog.fallbackClips,
@@ -111,7 +116,10 @@ private data class FeedSearchState(
     val error: String? = null
 )
 
-class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel() {
+class ClipCashViewModel(
+    private val repository: ClipCashRepository,
+    private val coinRepository: CoinRepository
+) : ViewModel() {
 
     private val authStage = MutableStateFlow(AuthStage.SIGN_IN)
     private val authPendingEmail = MutableStateFlow("")
@@ -223,18 +231,28 @@ class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel(
         Triple(wallet, progressMap, Pair(txs, questsUi))
     }
 
+    private val noticesAndCoinsFlow = combine(
+        repository.syncNoticeFlow,
+        feedbackBanner,
+        errorMessage,
+        coinRepository.status
+    ) { sync, banner, err, coinStatus ->
+        listOf<Any?>(sync, banner, err, coinStatus)
+    }
+
     val uiState: StateFlow<ClipCashUiState> = combine(
         authUiStateFlow,
         changeEmailState,
         walletBundleFlow,
         feedState,
-        combine(repository.syncNoticeFlow, feedbackBanner, errorMessage) { sync, banner, err ->
-            Triple(sync, banner, err)
-        }
-    ) { auth, emailChange, bundle, feed, notices ->
+        noticesAndCoinsFlow
+    ) { auth, emailChange, bundle, feed, meta ->
         val (wallet, progressMap, txsAndQuests) = bundle
         val (txs, questsUi) = txsAndQuests
-        val (syncNotice, banner, err) = notices
+        val syncNotice = meta[0] as String?
+        val banner = meta[1] as RewardFeedback?
+        val err = meta[2] as String?
+        val coinStatus = meta[3] as CoinRewardStatus
         val today = repository.todayDateKey()
         val videoTxsByTitle = txs
             .filter { it.type == TransactionType.VIDEO.name }
@@ -268,6 +286,7 @@ class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel(
             auth = auth,
             changeEmail = emailChange,
             wallet = wallet,
+            coinStatus = coinStatus,
             selectedCategory = feed.category,
             searchQuery = feed.query,
             clips = feed.clips,
@@ -808,68 +827,36 @@ class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel(
         startingSessionForClipId = null
     }
 
-    fun onVideoPlaying(clip: VideoClip) {
-        if (clip.remoteUuid.isNullOrBlank() || !clip.rewardEligible) return
-        if (activeWatchSessionId != null || startingSessionForClipId == clip.id) return
-
-        startingSessionForClipId = clip.id
+    fun grantRewardedAdCoins() {
         viewModelScope.launch {
-            repository.startWatchSession(clip)
-                .onSuccess { sid ->
-                    if (!sid.isNullOrBlank()) {
-                        activeWatchSessionId = sid
-                    }
+            coinRepository.grantRewardedAdCoins(CoinRepository.REWARD_COINS_PER_AD)
+                .onSuccess {
+                    feedbackBanner.value = RewardFeedback(
+                        title = "+${CoinRepository.REWARD_COINS_PER_AD} Coins Earned!",
+                        subtitle = "Rewarded ad completed.",
+                        coinsDelta = CoinRepository.REWARD_COINS_PER_AD
+                    )
                 }
                 .onFailure { err ->
-                    errorMessage.value = err.message ?: "Unable to start watch session"
+                    errorMessage.value = err.message ?: "Unable to credit coins right now."
                 }
-            if (startingSessionForClipId == clip.id) {
-                startingSessionForClipId = null
-            }
         }
+    }
+
+    fun reportAdMessage(message: String) {
+        errorMessage.value = message
+    }
+
+    fun onVideoPlaying(clip: VideoClip) {
+        // Watching YouTube videos must never award coins, points, or any reward.
     }
 
     fun onVideoEnded(clip: VideoClip, onAwarded: (Int) -> Unit = {}) {
-        val sid = activeWatchSessionId ?: return
-        viewModelScope.launch {
-            repository.completeWatchSession(clip, sid)
-                .onSuccess { coins ->
-                    activeWatchSessionId = null
-                    if (coins > 0) {
-                        feedbackBanner.value = RewardFeedback(
-                            title = "+$coins coins earned!",
-                            subtitle = "Earned from \"${clip.title}\"",
-                            coinsDelta = coins
-                        )
-                        onAwarded(coins)
-                    } else {
-                        feedbackBanner.value = RewardFeedback(
-                            title = "Watch Complete",
-                            subtitle = "No reward for this video",
-                            coinsDelta = 0
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    // Keep activeWatchSessionId open on "watched too briefly" so user can retry
-                    errorMessage.value = err.message ?: "Unable to claim watch reward"
-                }
-        }
+        // Watching YouTube videos must never award coins, points, or any reward.
     }
 
     fun recordClipWatched(clip: VideoClip) {
-        if (!clip.remoteUuid.isNullOrBlank() && clip.rewardEligible) {
-            onVideoEnded(clip)
-            return
-        }
-        viewModelScope.launch {
-            val earned = repository.recordClipWatched(clip)
-            feedbackBanner.value = RewardFeedback(
-                title = "ClipCash Reward Unlocked!",
-                subtitle = "Earned from \"${clip.title}\"",
-                coinsDelta = earned
-            )
-        }
+        // Watching YouTube videos must never award coins, points, or any reward.
     }
 
     fun recordCoinCatcherScore(coinsWon: Int) {
@@ -956,7 +943,11 @@ class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel(
                 val db = ClipCashDatabase.getInstance(app)
                 val sessionStore = SupabaseSessionStore(app)
                 val supabaseClient = SupabaseClient(sessionStore)
-                ClipCashViewModel(ClipCashRepository(db, supabaseClient, sessionStore))
+                val coinRepository = (app as? ClipCashApp)?.coinRepository ?: DataStoreCoinRepository(app)
+                ClipCashViewModel(
+                    repository = ClipCashRepository(db, supabaseClient, sessionStore),
+                    coinRepository = coinRepository
+                )
             }
         }
     }
