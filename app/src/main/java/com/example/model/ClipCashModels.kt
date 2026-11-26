@@ -50,9 +50,9 @@ data class RewardOption(
     val id: String,
     val title: String,
     val brand: String,
-    val cashLabel: String,
+    val perkLabel: String,
     val coinCost: Int,
-    val inputHint: String,
+    val description: String,
     val badge: String
 )
 
@@ -61,7 +61,7 @@ enum class TransactionType(val label: String) {
     GAME("Mini-Game"),
     BONUS("Daily Bonus"),
     QUEST("Quest Claimed"),
-    REDEEM("Cash Out")
+    REDEEM("Perk Unlocked")
 }
 
 data class NationalityOption(
@@ -77,11 +77,6 @@ data class NationalityOption(
 
 object ClipCatalog {
     const val VIDEO_REWARD_COINS = 10
-    const val USD_PER_100_COINS = 0.06
-    const val MIN_WITHDRAW_USD = 5.0
-    const val MIN_WITHDRAW_COINS = 8334
-
-    fun coinsToUsd(coins: Int): Double = (coins / 100.0) * USD_PER_100_COINS
 
     val nationalities: List<NationalityOption> = listOf(
         NationalityOption("United States", "American", "US", "+1", "🇺🇸"),
@@ -197,40 +192,40 @@ object ClipCatalog {
 
     val rewards: List<RewardOption> = listOf(
         RewardOption(
-            id = "reward_paypal_5",
-            title = "$5.00 Instant Payout",
-            brand = "PayPal Cash",
-            cashLabel = "$5.00",
-            coinCost = MIN_WITHDRAW_COINS,
-            inputHint = "PayPal email address",
-            badge = "Min Cash Out"
+            id = "perk_gold_badge",
+            title = "VIP Gold Badge",
+            brand = "Profile Flair",
+            perkLabel = "Gold Status",
+            coinCost = 150,
+            description = "Unlock a VIP Gold Collector badge recorded in your ClipCash ledger.",
+            badge = "Starter"
         ),
         RewardOption(
-            id = "reward_amazon_5",
-            title = "$5.00 Gift Card",
-            brand = "Amazon.com",
-            cashLabel = "$5.00",
-            coinCost = MIN_WITHDRAW_COINS,
-            inputHint = "Delivery email address",
+            id = "perk_arcade_pass",
+            title = "Arcade All-Star Pass",
+            brand = "Arcade Pass",
+            perkLabel = "Pro Flair",
+            coinCost = 350,
+            description = "Celebrate top mini-game scores with an exclusive Arcade All-Star pass.",
             badge = "Popular"
         ),
         RewardOption(
-            id = "reward_gplay_5",
-            title = "$5.00 Play Credit",
-            brand = "Google Play",
-            cashLabel = "$5.00",
-            coinCost = MIN_WITHDRAW_COINS,
-            inputHint = "Google account email",
-            badge = "Instant"
+            id = "perk_streak_shield",
+            title = "Daily Streak Shield",
+            brand = "Streak Guard",
+            perkLabel = "Club Perk",
+            coinCost = 600,
+            description = "Mark your daily streak milestone with a collectible Streak Shield token.",
+            badge = "Collector"
         ),
         RewardOption(
-            id = "reward_paypal_10",
-            title = "$10.00 Cash Transfer",
-            brand = "PayPal Cash",
-            cashLabel = "$10.00",
-            coinCost = 16667,
-            inputHint = "PayPal email address",
-            badge = "Best Value"
+            id = "perk_legend_crown",
+            title = "ClipCash Legend Crown",
+            brand = "Hall of Fame",
+            perkLabel = "Legend Tier",
+            coinCost = 1200,
+            description = "Join the virtual Hall of Fame with the prestigious Legend Crown perk.",
+            badge = "Rare"
         )
     )
 }

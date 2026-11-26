@@ -129,7 +129,7 @@ fun SplashScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             SplashPill(label = "Daily Quests", color = ElectricBlue)
-                            SplashPill(label = "Cash Out", color = Color(0xFFD99000))
+                            SplashPill(label = "Unlock Perks", color = Color(0xFFD99000))
                         }
                     }
 

@@ -677,36 +677,28 @@ class ClipCashRepository(
         return earned
     }
 
-    suspend fun redeemReward(reward: RewardOption, accountHandle: String): Result<String> {
-        val trimmed = accountHandle.trim()
-        if (trimmed.length < 4) {
-            return Result.failure(IllegalArgumentException("Enter a valid payout email or handle."))
-        }
+    suspend fun redeemReward(reward: RewardOption, note: String = ""): Result<String> {
+        val cleanNote = note.trim()
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         val result = database.withTransaction {
             val current = dao.getWalletState() ?: WalletStateEntity()
-            if (reward.coinCost < ClipCatalog.MIN_WITHDRAW_COINS) {
-                return@withTransaction Result.failure(
-                    IllegalStateException("Minimum withdrawal is $5.00 (${ClipCatalog.MIN_WITHDRAW_COINS} coins).")
-                )
-            }
-            if (current.coinBalance < ClipCatalog.MIN_WITHDRAW_COINS) {
-                return@withTransaction Result.failure(
-                    IllegalStateException("Minimum withdrawal is $5.00 (${ClipCatalog.MIN_WITHDRAW_COINS} coins). Need ${ClipCatalog.MIN_WITHDRAW_COINS - current.coinBalance} more coins.")
-                )
-            }
             if (current.coinBalance < reward.coinCost) {
                 return@withTransaction Result.failure(
                     IllegalStateException("You need ${reward.coinCost - current.coinBalance} more coins.")
                 )
             }
-            val code = "CC-${(100000..999999).random()}"
+            val code = "PK-${(100000..999999).random()}"
             val updated = current.copy(coinBalance = current.coinBalance - reward.coinCost)
+            val subtitleText = if (cleanNote.isNotEmpty()) {
+                "${reward.brand} · $cleanNote · Ref $code"
+            } else {
+                "${reward.brand} · ${reward.perkLabel} · Ref $code"
+            }
             val tx = TransactionEntity(
-                title = "${reward.brand} ${reward.cashLabel}",
-                subtitle = "Sent to $trimmed · Ref $code",
+                title = reward.title,
+                subtitle = subtitleText,
                 amountCoins = -reward.coinCost,
                 type = TransactionType.REDEEM.name
             )

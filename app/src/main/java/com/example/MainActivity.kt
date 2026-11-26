@@ -46,6 +46,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,6 +68,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.example.ads.AdMobManager
+import com.example.ads.ClipCashBannerAd
+import com.example.ads.InterstitialAdController
+import com.example.ads.findActivity
 import com.example.model.ClipCatalog
 import com.example.ui.components.ClipCashTopBar
 import com.example.ui.components.RewardToastBanner
@@ -111,6 +117,7 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT)
         )
+        AdMobManager.initialize(this)
         setContent {
             ClipCashTheme {
                 ClipCashApp()
@@ -126,6 +133,13 @@ fun ClipCashApp(
     val navController = rememberNavController()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val interstitialController = remember { InterstitialAdController() }
+
+    LaunchedEffect(Unit) {
+        interstitialController.preload(context)
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -197,6 +211,9 @@ fun ClipCashApp(
                         bottomBar = {
                             if (!isWide) {
                                 Column {
+                                    if (currentTab != MainTab.WALLET) {
+                                        ClipCashBannerAd()
+                                    }
                                     HorizontalDivider(thickness = 1.dp, color = Color(0xFF1A2A50))
                                     NavigationBar(
                                         containerColor = DarkNavBar,
@@ -277,57 +294,68 @@ fun ClipCashApp(
                                 }
                             }
 
-                            Box(
-                                modifier = Modifier.weight(1f),
-                                contentAlignment = Alignment.TopCenter
-                            ) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .widthIn(max = 960.dp)
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.TopCenter
                                 ) {
-                                    when (currentTab) {
-                                        MainTab.WATCH -> WatchScreen(
-                                            uiState = uiState,
-                                            isWideLayout = isWide,
-                                            onSearchQueryChange = viewModel::updateSearchQuery,
-                                            onSubmitSearch = viewModel::submitSearch,
-                                            onSelectCategory = viewModel::selectCategory,
-                                            onLoadMoreClips = viewModel::loadMoreClips,
-                                            onClaimCheckIn = viewModel::claimDailyCheckIn,
-                                            onWatchClip = { clip ->
-                                                viewModel.resetWatchSession()
-                                                navController.navigate("player/${clip.id}")
-                                            }
-                                        )
-                                        MainTab.GAMES -> GamesScreen(
-                                            uiState = uiState,
-                                            onCoinCatcherFinished = viewModel::recordCoinCatcherScore,
-                                            onSpinWheelResult = viewModel::spinLuckyWheel,
-                                            onArcadeGameFinished = viewModel::recordArcadeGameResult
-                                        )
-                                        MainTab.QUESTS -> QuestsScreen(
-                                            uiState = uiState,
-                                            onClaimQuest = viewModel::claimQuest
-                                        )
-                                        MainTab.WALLET -> WalletScreen(
-                                            uiState = uiState,
-                                            onRedeemReward = viewModel::redeemReward,
-                                            onSyncWallet = viewModel::refreshWalletSync,
-                                            onChangeEmail = {
-                                                viewModel.resetChangeEmailFlow()
-                                                navController.navigate(ROUTE_CHANGE_EMAIL)
-                                            },
-                                            onSignOut = viewModel::signOut
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .widthIn(max = 960.dp)
+                                    ) {
+                                        when (currentTab) {
+                                            MainTab.WATCH -> WatchScreen(
+                                                uiState = uiState,
+                                                isWideLayout = isWide,
+                                                onSearchQueryChange = viewModel::updateSearchQuery,
+                                                onSubmitSearch = viewModel::submitSearch,
+                                                onSelectCategory = viewModel::selectCategory,
+                                                onLoadMoreClips = viewModel::loadMoreClips,
+                                                onClaimCheckIn = viewModel::claimDailyCheckIn,
+                                                onWatchClip = { clip ->
+                                                    viewModel.resetWatchSession()
+                                                    navController.navigate("player/${clip.id}")
+                                                }
+                                            )
+                                            MainTab.GAMES -> GamesScreen(
+                                                uiState = uiState,
+                                                onCoinCatcherFinished = { score ->
+                                                    viewModel.recordCoinCatcherScore(score)
+                                                    interstitialController.maybeShowAtNaturalBreak(activity)
+                                                },
+                                                onSpinWheelResult = viewModel::spinLuckyWheel,
+                                                onArcadeGameFinished = { gameTitle, coins ->
+                                                    viewModel.recordArcadeGameResult(gameTitle, coins)
+                                                    interstitialController.maybeShowAtNaturalBreak(activity)
+                                                }
+                                            )
+                                            MainTab.QUESTS -> QuestsScreen(
+                                                uiState = uiState,
+                                                onClaimQuest = viewModel::claimQuest
+                                            )
+                                            MainTab.WALLET -> WalletScreen(
+                                                uiState = uiState,
+                                                onRedeemReward = viewModel::redeemReward,
+                                                onSyncWallet = viewModel::refreshWalletSync,
+                                                onChangeEmail = {
+                                                    viewModel.resetChangeEmailFlow()
+                                                    navController.navigate(ROUTE_CHANGE_EMAIL)
+                                                },
+                                                onSignOut = viewModel::signOut
+                                            )
+                                        }
+
+                                        RewardToastBanner(
+                                            feedback = uiState.feedbackBanner,
+                                            errorMessage = uiState.errorMessage,
+                                            onDismiss = viewModel::dismissBanner,
+                                            modifier = Modifier.align(Alignment.TopCenter)
                                         )
                                     }
-
-                                    RewardToastBanner(
-                                        feedback = uiState.feedbackBanner,
-                                        errorMessage = uiState.errorMessage,
-                                        onDismiss = viewModel::dismissBanner,
-                                        modifier = Modifier.align(Alignment.TopCenter)
-                                    )
+                                }
+                                if (isWide && currentTab != MainTab.WALLET) {
+                                    ClipCashBannerAd()
                                 }
                             }
                         }
@@ -361,6 +389,7 @@ fun ClipCashApp(
                 onBack = {
                     viewModel.resetWatchSession()
                     navController.popBackStack()
+                    interstitialController.maybeShowAtNaturalBreak(activity)
                 },
                 feedbackBanner = uiState.feedbackBanner,
                 errorMessage = uiState.errorMessage,

@@ -98,10 +98,7 @@ data class ClipCashUiState(
     val isFreeSpinAvailable: Boolean = true,
     val feedbackBanner: RewardFeedback? = null,
     val errorMessage: String? = null
-) {
-    val estimatedUsdValue: Double
-        get() = ClipCatalog.coinsToUsd(wallet.coinBalance)
-}
+)
 
 private data class FeedSearchState(
     val category: ClipCategory = ClipCategory.ALL,
@@ -930,19 +927,19 @@ class ClipCashViewModel(private val repository: ClipCashRepository) : ViewModel(
         }
     }
 
-    fun redeemReward(reward: RewardOption, destination: String, onSuccess: (String) -> Unit) {
+    fun redeemReward(reward: RewardOption, note: String = "", onSuccess: (String) -> Unit) {
         viewModelScope.launch {
-            repository.redeemReward(reward, destination)
+            repository.redeemReward(reward, note)
                 .onSuccess { refCode ->
                     feedbackBanner.value = RewardFeedback(
-                        title = "Payout Requested!",
-                        subtitle = "${reward.brand} ${reward.cashLabel} · Ref $refCode",
+                        title = "Perk Unlocked!",
+                        subtitle = "${reward.title} · Ref $refCode",
                         coinsDelta = -reward.coinCost
                     )
                     onSuccess(refCode)
                 }
                 .onFailure { err ->
-                    errorMessage.value = err.message ?: "Redemption failed"
+                    errorMessage.value = err.message ?: "Unable to unlock perk"
                 }
         }
     }

@@ -679,7 +679,7 @@ fun SlideMergeDialog(
                         modifier = Modifier.height(48.dp)
                     ) {
                         Text(
-                            text = "Cash Out +$earnedCoins Coins",
+                            text = "Claim +$earnedCoins Coins",
                             color = CashEmerald,
                             fontWeight = FontWeight.Bold
                         )

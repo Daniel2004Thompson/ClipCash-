@@ -771,9 +771,9 @@ private fun HeroCoinPedestalGraphic(bonusAmount: Int) {
                 style = Stroke(width = 1.8.dp.toPx())
             )
 
-            // Crisp '$' emblem
+            // Crisp '★' virtual coin emblem
             val dollarLayout = textMeasurer.measure(
-                text = "$",
+                text = "★",
                 style = TextStyle(
                     color = Color(0xFFFFF7CC),
                     fontSize = 36.sp,

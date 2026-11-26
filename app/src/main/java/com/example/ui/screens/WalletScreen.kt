@@ -56,7 +56,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.TransactionEntity
-import com.example.model.ClipCatalog
 import com.example.model.RewardOption
 import com.example.model.TransactionType
 import com.example.ui.components.CoinBadge
@@ -77,7 +76,7 @@ import java.util.Locale
 private enum class LedgerFilter(val label: String) {
     ALL("All"),
     EARNED("Earned"),
-    REDEEMED("Cash Outs")
+    REDEEMED("Perks")
 }
 
 @Composable
@@ -213,7 +212,6 @@ fun WalletScreen(
 
         // Wallet Hero Card
         item {
-            val usdFormatted = String.format(Locale.US, "$%.2f", uiState.estimatedUsdValue)
             Card(
                 shape = RoundedCornerShape(26.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -248,7 +246,7 @@ fun WalletScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Estimated Value: $usdFormatted USD  (100 Coins = $0.06 · Min withdraw $5.00)",
+                        text = "Virtual in-app coins for arcade & profile perks · No real-money value",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.88f)
                     )
@@ -272,16 +270,16 @@ fun WalletScreen(
             }
         }
 
-        // Cash Out Catalog Header
+        // Virtual Coin Shop Header
         item {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "Cash Out Rewards",
+                    text = "Virtual Coin Shop",
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    text = "Minimum withdrawal: $5.00 (${ClipCatalog.MIN_WITHDRAW_COINS} Coins) · 100 Coins = $0.06",
+                    text = "Spend earned coins on in-app badges, arcade passes & collector perks.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -413,7 +411,7 @@ private fun RewardCard(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = reward.brand,
+                                text = reward.title,
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Surface(
@@ -429,7 +427,7 @@ private fun RewardCard(
                             }
                         }
                         Text(
-                            text = "${reward.title} · ${reward.coinCost} Coins",
+                            text = "${reward.brand} · ${reward.coinCost} Coins",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -446,7 +444,7 @@ private fun RewardCard(
                     ),
                     modifier = Modifier.testTag("redeem_${reward.id}")
                 ) {
-                    Text(if (canRedeem) "Cash Out" else "${(progress * 100).toInt()}%", fontWeight = FontWeight.Bold)
+                    Text(if (canRedeem) "Unlock" else "${(progress * 100).toInt()}%", fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -540,21 +538,26 @@ private fun RedeemDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
-    var destination by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Redeem ${reward.brand} ${reward.cashLabel}") },
+        title = { Text("Unlock ${reward.title}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "This will deduct ${reward.coinCost} coins from your ClipCash wallet and generate a payout reference.",
+                    text = reward.description,
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Text(
+                    text = "Virtual coins are for in-app entertainment and have no real-money value. Unlocking deducts ${reward.coinCost} coins from your balance.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedTextField(
-                    value = destination,
-                    onValueChange = { destination = it },
-                    label = { Text(reward.inputHint) },
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Optional ledger note") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -564,11 +567,10 @@ private fun RedeemDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(destination) },
-                enabled = destination.trim().length >= 4,
+                onClick = { onConfirm(note) },
                 modifier = Modifier.testTag("confirm_redeem_button")
             ) {
-                Text("Confirm (${reward.coinCost})")
+                Text("Unlock (${reward.coinCost})")
             }
         },
         dismissButton = {

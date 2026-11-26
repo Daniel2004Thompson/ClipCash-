@@ -21,7 +21,7 @@ ClipCash is a modern Android rewards app built with Kotlin and Jetpack Compose (
   - **Color Beat Simon**: Repeat growing 4-pad neon light sequences.
   - **Whack-a-Coin**: 3x3 grid whack arcade for coins and gems.
 - **Daily Quests & Check-In (`QuestsScreen`)**: Claim daily check-in bonuses and complete milestone quests as your watch and play progress grows.
-- **Wallet & Account Management (`WalletScreen`)**: View your coin balance, transaction history, cash-out options, and manage account security.
+- **Wallet & Virtual Coin Shop (`WalletScreen`)**: View your coin balance, transaction history, virtual in-app perk unlocks (badges, passes & collector perks with no real-money value), and manage account security.
 - **Authentication & Verification (`AuthScreen` & `VerificationScreens`)**: Complete Sign In, Sign Up, OTP email verification, Forgot/Reset Password, and Change Email flows.
 - **Adaptive Responsive UI**: Supports phone bottom navigation (`NavigationBar`) and tablet/expanded screen layouts (`NavigationRail`) with edge-to-edge rendering.
 
@@ -38,7 +38,7 @@ ClipCash is a modern Android rewards app built with Kotlin and Jetpack Compose (
   - Gradle `9.3.1`
   - JDK `21`
   - `minSdk`: `24` | `targetSdk`: `36` | `compileSdk`: `36.1`
-  - Current Version: `3.0.0` (`versionCode = 3`)
+  - Current Version: `4.0.0` (`versionCode = 4`)
 
 ---
 
@@ -113,4 +113,4 @@ This repository includes `.github/workflows/build-apk.yml`, which automatically 
 
 1. Open the **Actions** tab in your GitHub repository.
 2. Select the latest **Build Debug APK** workflow run (or click **Run workflow** to trigger one manually).
-3. Download the **`clipcash-debug-apk`** artifact from the workflow summary to install the APK on an Android device.
+3. Download the **`clipcash-debug-apk-v4.0.0`** artifact from the workflow summary to install the APK on an Android device.

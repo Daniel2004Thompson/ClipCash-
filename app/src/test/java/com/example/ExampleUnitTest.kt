@@ -17,9 +17,11 @@ class ExampleUnitTest {
             it.sourceLabel.contains("youtube", ignoreCase = true)
         })
         assertFalse(ClipCatalog.quests.isEmpty())
-        assertEquals(0.06, ClipCatalog.coinsToUsd(100), 0.0001)
-        assertTrue(ClipCatalog.coinsToUsd(ClipCatalog.MIN_WITHDRAW_COINS) >= 5.0)
-        assertTrue(ClipCatalog.rewards.all { it.coinCost >= ClipCatalog.MIN_WITHDRAW_COINS })
+        assertFalse(ClipCatalog.rewards.isEmpty())
+        assertTrue(ClipCatalog.rewards.all {
+            it.coinCost > 0 && it.title.isNotBlank() && it.perkLabel.isNotBlank() && it.badge.isNotBlank()
+        })
+        assertEquals(ClipCatalog.rewards.size, ClipCatalog.rewards.map { it.id }.distinct().size)
     }
 
     @Test

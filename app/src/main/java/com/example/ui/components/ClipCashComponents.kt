@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Person
@@ -51,7 +50,6 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.model.ClipCatalog
 import com.example.ui.theme.BrightGold
 import com.example.ui.theme.CashEmerald
 import com.example.ui.theme.CoinAmber
@@ -64,7 +62,6 @@ import com.example.ui.theme.DeepEmerald
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.InkNavy
 import com.example.viewmodel.RewardFeedback
-import java.util.Locale
 
 @Composable
 fun ClipCashTopBar(
@@ -160,7 +157,6 @@ fun ClipCashTopBar(
                     }
 
                     // Balance pill
-                    val usd = String.format(Locale.US, "$%.2f", ClipCatalog.coinsToUsd(coinBalance))
                     Row(
                         modifier = Modifier
                             .testTag("topbar_balance_pill")
@@ -188,7 +184,7 @@ fun ClipCashTopBar(
                                 color = Color.White
                             )
                             Text(
-                                text = "≈ $usd",
+                                text = "Coins",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 10.sp,
                                     lineHeight = 11.sp
@@ -237,7 +233,7 @@ fun CoinBadge(
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = Icons.Filled.AttachMoney,
+            imageVector = Icons.Filled.Stars,
             contentDescription = null,
             tint = Color(0xFF754400),
             modifier = Modifier.size((sizeDp * 0.72f).dp)

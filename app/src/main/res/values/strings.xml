@@ -10,7 +10,7 @@
     <string name="daily_bonus">Daily Check-In</string>
     <string name="claim_bonus">Claim +50</string>
     <string name="claimed_today">Claimed Today</string>
-    <string name="cash_out">Cash Out</string>
+    <string name="cash_out">Unlock Perk</string>
     <string name="coin_catcher_title">Coin Catcher</string>
     <string name="lucky_spin_title">Lucky Spin</string>
 </resources>
