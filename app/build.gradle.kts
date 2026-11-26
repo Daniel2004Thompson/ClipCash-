@@ -22,18 +22,6 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "SUPABASE_CENTRAL_POINT_URL", "\"https://vidvozabnlngqhnxrhmf.supabase.co/functions/v1/central-point\"")
     buildConfigField("String", "SUPABASE_SEARCH_FUNCTION_URL", "\"https://vidvozabnlngqhnxrhmf.supabase.co/functions/v1/youtube-search\"")
-
-    // Google AdMob official test IDs by default; replace or override via env once registered
-    val admobAppId = System.getenv("ADMOB_APP_ID")?.takeIf { it.isNotBlank() }
-      ?: "ca-app-pub-3940256099942544~3347511713"
-    val admobBannerId = System.getenv("ADMOB_BANNER_AD_UNIT_ID")?.takeIf { it.isNotBlank() }
-      ?: "ca-app-pub-3940256099942544/6300978111"
-    val admobInterstitialId = System.getenv("ADMOB_INTERSTITIAL_AD_UNIT_ID")?.takeIf { it.isNotBlank() }
-      ?: "ca-app-pub-3940256099942544/1033173712"
-
-    manifestPlaceholders["ADMOB_APP_ID"] = admobAppId
-    buildConfigField("String", "ADMOB_BANNER_AD_UNIT_ID", "\"$admobBannerId\"")
-    buildConfigField("String", "ADMOB_INTERSTITIAL_AD_UNIT_ID", "\"$admobInterstitialId\"")
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

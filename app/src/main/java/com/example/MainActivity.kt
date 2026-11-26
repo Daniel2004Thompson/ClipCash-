@@ -2,6 +2,7 @@ package com.example
 
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -68,9 +69,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.example.ads.AdMobManager
-import com.example.ads.ClipCashBannerAd
-import com.example.ads.InterstitialAdController
+import com.example.ads.BannerAd
+import com.example.ads.InterstitialManager
+import com.example.ads.RewardedManager
 import com.example.ads.findActivity
 import com.example.model.ClipCatalog
 import com.example.ui.components.ClipCashTopBar
@@ -117,17 +118,16 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT)
         )
-        AdMobManager.initialize(this)
         setContent {
             ClipCashTheme {
-                ClipCashApp()
+                ClipCashRoot()
             }
         }
     }
 }
 
 @Composable
-fun ClipCashApp(
+fun ClipCashRoot(
     viewModel: ClipCashViewModel = viewModel(factory = ClipCashViewModel.Factory)
 ) {
     val navController = rememberNavController()
@@ -135,11 +135,8 @@ fun ClipCashApp(
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
-    val interstitialController = remember { InterstitialAdController() }
-
-    LaunchedEffect(Unit) {
-        interstitialController.preload(context)
-    }
+    val interstitial = remember { InterstitialManager(context.applicationContext).also { it.load() } }
+    val rewarded = remember { RewardedManager(context.applicationContext).also { it.load() } }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -211,9 +208,7 @@ fun ClipCashApp(
                         bottomBar = {
                             if (!isWide) {
                                 Column {
-                                    if (currentTab != MainTab.WALLET) {
-                                        ClipCashBannerAd()
-                                    }
+                                    BannerAd()
                                     HorizontalDivider(thickness = 1.dp, color = Color(0xFF1A2A50))
                                     NavigationBar(
                                         containerColor = DarkNavBar,
@@ -322,17 +317,34 @@ fun ClipCashApp(
                                                 uiState = uiState,
                                                 onCoinCatcherFinished = { score ->
                                                     viewModel.recordCoinCatcherScore(score)
-                                                    interstitialController.maybeShowAtNaturalBreak(activity)
+                                                    activity?.let { interstitial.show(it) }
                                                 },
                                                 onSpinWheelResult = viewModel::spinLuckyWheel,
                                                 onArcadeGameFinished = { gameTitle, coins ->
                                                     viewModel.recordArcadeGameResult(gameTitle, coins)
-                                                    interstitialController.maybeShowAtNaturalBreak(activity)
+                                                    activity?.let { interstitial.show(it) }
                                                 }
                                             )
                                             MainTab.QUESTS -> QuestsScreen(
                                                 uiState = uiState,
-                                                onClaimQuest = viewModel::claimQuest
+                                                onClaimQuest = viewModel::claimQuest,
+                                                onWatchAdToEarn = {
+                                                    val act = activity
+                                                    val started = if (act != null) {
+                                                        rewarded.show(act) {
+                                                            // TODO: Add your reward logic here
+                                                        }
+                                                    } else {
+                                                        false
+                                                    }
+                                                    if (!started) {
+                                                        Toast.makeText(
+                                                            context,
+                                                            "Ad not ready, try again",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
                                             )
                                             MainTab.WALLET -> WalletScreen(
                                                 uiState = uiState,
@@ -354,8 +366,8 @@ fun ClipCashApp(
                                         )
                                     }
                                 }
-                                if (isWide && currentTab != MainTab.WALLET) {
-                                    ClipCashBannerAd()
+                                if (isWide) {
+                                    BannerAd()
                                 }
                             }
                         }
@@ -388,8 +400,14 @@ fun ClipCashApp(
                 },
                 onBack = {
                     viewModel.resetWatchSession()
-                    navController.popBackStack()
-                    interstitialController.maybeShowAtNaturalBreak(activity)
+                    val act = activity
+                    if (act != null) {
+                        interstitial.show(act) {
+                            navController.popBackStack()
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
                 },
                 feedbackBanner = uiState.feedbackBanner,
                 errorMessage = uiState.errorMessage,
