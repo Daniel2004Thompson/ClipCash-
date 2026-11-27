@@ -64,7 +64,13 @@ data class RemoteProfileData(
     val phoneNumber: String = "",
     val claimedQuestIds: Set<String> = emptySet(),
     val recentTransactions: List<TransactionEntity> = emptyList(),
-    val hasWalletsRow: Boolean = false
+    val clipProgress: List<ClipProgressEntity> = emptyList(),
+    val hasWalletsRow: Boolean = false,
+    val hasPublicUsersRow: Boolean = false,
+    val serverWalletBalance: Int? = null,
+    val adsWatchedToday: Int = 0,
+    val adsWatchedDate: String = "",
+    val lastRewardedAtMs: Long = 0L
 )
 
 data class ShortsPageResult(
@@ -1114,12 +1120,20 @@ class SupabaseClient(
 
     suspend fun fetchProfile(session: SupabaseSession): SupabaseDbSyncResult<RemoteProfileData?> =
         executeAuthorizedRest(session) { activeSession ->
-            // 1. Read canonical Auth user & user_metadata
-            val (authUser, authNeedsRefresh) = fetchAuthUserBlocking(activeSession)
+            // 1. Read canonical Auth user & user_metadata from Supabase Auth (auth.users)
+            val (authUser, authNeedsRefresh, authErr) = fetchAuthUserBlocking(activeSession)
             if (authNeedsRefresh) return@executeAuthorizedRest null to true
+            if (authErr != null || authUser == null) {
+                return@executeAuthorizedRest (authErr ?: SupabaseDbSyncResult.Error("Unable to verify ClipCash account")) to false
+            }
 
-            val authEmail = authUser?.optCleanString("email").orEmpty().ifBlank { activeSession.email }
-            val userMeta = authUser?.optJSONObject("user_metadata")
+            val canonicalUserId = authUser.optCleanString("id")
+            if (canonicalUserId.isNotBlank() && canonicalUserId != activeSession.userId) {
+                return@executeAuthorizedRest SupabaseDbSyncResult.Error("Account mismatch detected. Please sign in again.") to false
+            }
+
+            val authEmail = authUser.optCleanString("email").ifBlank { activeSession.email }
+            val userMeta = authUser.optJSONObject("user_metadata")
             val metaFullName = userMeta?.optCleanString("full_name").orEmpty()
             val metaUsername = userMeta?.optCleanString("username").orEmpty()
             val metaNationality = userMeta?.optCleanString("nationality").orEmpty()
@@ -1181,7 +1195,15 @@ class SupabaseClient(
             }
             val metaBalance = cloudState?.optInt("coin_balance", -1)?.takeIf { it >= 0 }
             val cloudBalance = when {
-                serverWalletBalance != null && metaBalance != null -> maxOf(serverWalletBalance, metaBalance)
+                serverWalletBalance != null && metaBalance != null -> {
+                    if (cloudState.has("last_server_wallet_balance")) {
+                        val prevServerBal = cloudState.optInt("last_server_wallet_balance", serverWalletBalance)
+                        val serverDelta = (serverWalletBalance - prevServerBal).coerceAtLeast(0)
+                        (metaBalance + serverDelta).coerceAtLeast(0)
+                    } else {
+                        maxOf(serverWalletBalance, metaBalance)
+                    }
+                }
                 serverWalletBalance != null -> serverWalletBalance
                 metaBalance != null -> metaBalance
                 else -> 150
@@ -1217,6 +1239,25 @@ class SupabaseClient(
                 }
             }
 
+            val cloudClipProgress = buildList {
+                val arr = cloudState?.optJSONArray("clip_progress")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val cid = obj.optCleanString("clip_id")
+                        if (cid.isBlank()) continue
+                        add(
+                            ClipProgressEntity(
+                                clipId = cid,
+                                watchCount = obj.optInt("watch_count", 0).coerceAtLeast(0),
+                                lastWatchedAt = obj.optLong("last_watched_at", 0L).coerceAtLeast(0L),
+                                earnedCoinsTotal = obj.optInt("earned_coins_total", 0).coerceAtLeast(0)
+                            )
+                        )
+                    }
+                }
+            }
+
             val entity = WalletStateEntity(
                 id = 1,
                 userId = activeSession.userId,
@@ -1240,7 +1281,13 @@ class SupabaseClient(
                     phoneNumber = resolvedPhone,
                     claimedQuestIds = claimedQuestIds,
                     recentTransactions = recentTxs,
-                    hasWalletsRow = hasWalletRow
+                    clipProgress = cloudClipProgress,
+                    hasWalletsRow = hasWalletRow,
+                    hasPublicUsersRow = resolvedUsersRow != null,
+                    serverWalletBalance = serverWalletBalance,
+                    adsWatchedToday = cloudState?.optInt("ads_watched_today", 0)?.coerceAtLeast(0) ?: 0,
+                    adsWatchedDate = cloudState?.optCleanString("ads_watched_date").orEmpty(),
+                    lastRewardedAtMs = cloudState?.optLong("last_rewarded_ad_ms", 0L)?.coerceAtLeast(0L) ?: 0L
                 )
             ) to false
         }
@@ -1249,18 +1296,35 @@ class SupabaseClient(
         session: SupabaseSession,
         wallet: WalletStateEntity,
         claimedQuestIds: Set<String> = emptySet(),
-        recentTransactions: List<TransactionEntity> = emptyList()
+        recentTransactions: List<TransactionEntity> = emptyList(),
+        clipProgress: List<ClipProgressEntity> = emptyList(),
+        coinStatus: CoinRewardStatus = CoinRewardStatus(),
+        adsWatchedDate: String = "",
+        lastServerWalletBalance: Int? = null,
+        ensurePublicUserRow: Boolean = false
     ): SupabaseDbSyncResult<Unit> =
         executeAuthorizedRest(session) { activeSession ->
             // Clients must only READ public.wallets (server RPCs start_watch/complete_watch mutate balances).
-            // Mirror ClipCash state (streaks, quests, games, ledger) to authenticated user_metadata.
+            // Mirror ClipCash state (coins, ad limits, streaks, quests, games, progress, ledger) to authenticated
+            // user_metadata bound directly to this user's Supabase Auth UUID & email.
             val (metaOk, metaNeedsRefresh) = updateAuthMetadataBlocking(
                 activeSession = activeSession,
                 wallet = wallet,
                 claimedQuestIds = claimedQuestIds,
-                recentTransactions = recentTransactions
+                recentTransactions = recentTransactions,
+                clipProgress = clipProgress,
+                coinStatus = coinStatus,
+                adsWatchedDate = adsWatchedDate,
+                lastServerWalletBalance = lastServerWalletBalance
             )
             if (metaNeedsRefresh) return@executeAuthorizedRest null to true
+
+            if (metaOk && ensurePublicUserRow) {
+                runCatching {
+                    val (_, userNeedsRefresh) = upsertPublicUserBlocking(activeSession)
+                    if (userNeedsRefresh) return@executeAuthorizedRest null to true
+                }
+            }
 
             val result = if (metaOk) {
                 SupabaseDbSyncResult.Success(Unit)
@@ -1270,7 +1334,9 @@ class SupabaseClient(
             result to false
         }
 
-    private fun fetchAuthUserBlocking(activeSession: SupabaseSession): Pair<JSONObject?, Boolean> {
+    private fun fetchAuthUserBlocking(
+        activeSession: SupabaseSession
+    ): Triple<JSONObject?, Boolean, SupabaseDbSyncResult.Error?> {
         val req = newGatewayRequestBuilder(
             targetPath = "/auth/v1/user",
             accessToken = activeSession.accessToken
@@ -1280,9 +1346,17 @@ class SupabaseClient(
 
         httpClient.newCall(req).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
-            if (isJwtExpiredOrUnauthorized(resp.code, body)) return null to true
-            if (!resp.isSuccessful || body.isBlank()) return null to false
-            return runCatching { JSONObject(body) }.getOrNull() to false
+            if (isJwtExpiredOrUnauthorized(resp.code, body)) return Triple(null, true, null)
+            if (!resp.isSuccessful || body.isBlank()) {
+                return Triple(
+                    null,
+                    false,
+                    SupabaseDbSyncResult.Error(parseSupabaseError(body, "Account sync error (${resp.code})"))
+                )
+            }
+            val json = runCatching { JSONObject(body) }.getOrNull()
+                ?: return Triple(null, false, SupabaseDbSyncResult.Error("Invalid account response"))
+            return Triple(json, false, null)
         }
     }
 
@@ -1496,14 +1570,18 @@ class SupabaseClient(
         activeSession: SupabaseSession,
         wallet: WalletStateEntity,
         claimedQuestIds: Set<String>,
-        recentTransactions: List<TransactionEntity>
+        recentTransactions: List<TransactionEntity>,
+        clipProgress: List<ClipProgressEntity>,
+        coinStatus: CoinRewardStatus,
+        adsWatchedDate: String,
+        lastServerWalletBalance: Int?
     ): Pair<Boolean, Boolean> {
         val txArray = JSONArray().apply {
-            recentTransactions.take(40).forEach { tx ->
+            recentTransactions.take(25).forEach { tx ->
                 put(
                     JSONObject().apply {
-                        put("title", tx.title.take(80))
-                        put("subtitle", tx.subtitle.take(80))
+                        put("title", tx.title.take(64))
+                        put("subtitle", tx.subtitle.take(64))
                         put("amount_coins", tx.amountCoins)
                         put("type", tx.type)
                         put("created_at_ms", tx.createdAt)
@@ -1511,10 +1589,27 @@ class SupabaseClient(
                 )
             }
         }
+        val progressArray = JSONArray().apply {
+            clipProgress
+                .sortedByDescending { it.lastWatchedAt }
+                .take(20)
+                .forEach { prog ->
+                    put(
+                        JSONObject().apply {
+                            put("clip_id", prog.clipId.take(48))
+                            put("watch_count", prog.watchCount)
+                            put("last_watched_at", prog.lastWatchedAt)
+                            put("earned_coins_total", prog.earnedCoinsTotal)
+                        }
+                    )
+                }
+        }
         val questsArray = JSONArray().apply {
             claimedQuestIds.forEach { put(it) }
         }
         val clipCashState = JSONObject().apply {
+            put("user_id", activeSession.userId)
+            put("email", activeSession.email)
             put("coin_balance", wallet.coinBalance)
             put("total_earned_coins", wallet.totalEarnedCoins)
             put("streak_days", wallet.streakDays)
@@ -1522,7 +1617,15 @@ class SupabaseClient(
             put("last_free_spin_date", wallet.lastFreeSpinDate)
             put("clips_watched_count", wallet.clipsWatchedCount)
             put("games_played_count", wallet.gamesPlayedCount)
+            put("ads_watched_today", coinStatus.adsWatchedToday)
+            put("ads_watched_date", adsWatchedDate)
+            put("last_rewarded_ad_ms", coinStatus.lastRewardedAtMs)
+            if (lastServerWalletBalance != null) {
+                put("last_server_wallet_balance", lastServerWalletBalance)
+            }
+            put("updated_at_ms", System.currentTimeMillis())
             put("claimed_quests", questsArray)
+            put("clip_progress", progressArray)
             put("recent_transactions", txArray)
         }
         val userData = JSONObject().apply {
@@ -1552,6 +1655,7 @@ class SupabaseClient(
 
     private fun isJwtExpiredOrUnauthorized(code: Int, body: String): Boolean {
         return code == 401 ||
+            (code == 403 && body.contains("jwt", ignoreCase = true)) ||
             body.contains("PGRST301") ||
             body.contains("JWT expired", ignoreCase = true)
     }

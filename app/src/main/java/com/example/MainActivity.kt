@@ -226,7 +226,7 @@ fun ClipCashRoot(
                         contentWindowInsets = WindowInsets.systemBars,
                         topBar = {
                             ClipCashTopBar(
-                                coinBalance = uiState.coinStatus.balance,
+                                coinBalance = uiState.wallet.coinBalance,
                                 streakDays = uiState.wallet.streakDays,
                                 onWalletClick = { currentTab = MainTab.WALLET }
                             )
@@ -369,10 +369,27 @@ fun ClipCashRoot(
                                                 uiState = uiState,
                                                 onCoinCatcherFinished = { score ->
                                                     viewModel.recordCoinCatcherScore(score)
+                                                    adManager.onGameAttemptCompleted(
+                                                        activity = activity,
+                                                        onAdCompleted = { viewModel.grantPostGamesAdCoins() }
+                                                    )
                                                 },
-                                                onSpinWheelResult = viewModel::spinLuckyWheel,
+                                                onSpinWheelResult = { prizeCoins, usedFreeSpin ->
+                                                    val spinAllowed = usedFreeSpin || uiState.wallet.coinBalance >= 25
+                                                    viewModel.spinLuckyWheel(prizeCoins, usedFreeSpin)
+                                                    if (spinAllowed) {
+                                                        adManager.onGameAttemptCompleted(
+                                                            activity = activity,
+                                                            onAdCompleted = { viewModel.grantPostGamesAdCoins() }
+                                                        )
+                                                    }
+                                                },
                                                 onArcadeGameFinished = { gameTitle, coins ->
                                                     viewModel.recordArcadeGameResult(gameTitle, coins)
+                                                    adManager.onGameAttemptCompleted(
+                                                        activity = activity,
+                                                        onAdCompleted = { viewModel.grantPostGamesAdCoins() }
+                                                    )
                                                 }
                                             )
                                             MainTab.QUESTS -> QuestsScreen(
@@ -435,7 +452,10 @@ fun ClipCashRoot(
                 errorMessage = uiState.errorMessage,
                 onDismissBanner = viewModel::dismissBanner,
                 onShortNaturalBreak = {
-                    adManager.onShortWatchedBreak(activity)
+                    adManager.onShortWatchedBreak(
+                        activity = activity,
+                        onAdCompleted = { viewModel.grantPostShortsAdCoins() }
+                    )
                 }
             )
         }

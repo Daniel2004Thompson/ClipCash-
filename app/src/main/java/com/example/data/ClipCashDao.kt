@@ -20,6 +20,9 @@ interface ClipCashDao {
     @Query("SELECT * FROM clip_progress")
     fun observeAllClipProgress(): Flow<List<ClipProgressEntity>>
 
+    @Query("SELECT * FROM clip_progress")
+    suspend fun getAllClipProgressSync(): List<ClipProgressEntity>
+
     @Query("SELECT * FROM clip_progress WHERE clipId = :clipId")
     suspend fun getClipProgress(clipId: String): ClipProgressEntity?
 

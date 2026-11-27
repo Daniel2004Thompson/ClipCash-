@@ -178,9 +178,11 @@ class ClipCashViewModel(
 
     fun refreshWalletSyncIfStale() {
         val now = System.currentTimeMillis()
-        if (lastSyncedUserId != null && now - lastSyncAtMs >= 15_000L) {
-            lastSyncAtMs = now
-            viewModelScope.launch {
+        if (lastSyncedUserId == null) return
+        viewModelScope.launch {
+            val hasPending = repository.hasPendingCloudSync()
+            if (hasPending || now - lastSyncAtMs >= 15_000L) {
+                lastSyncAtMs = now
                 repository.syncFromSupabase()
             }
         }
@@ -830,11 +832,61 @@ class ClipCashViewModel(
     fun grantRewardedAdCoins() {
         viewModelScope.launch {
             coinRepository.grantRewardedAdCoins(CoinRepository.REWARD_COINS_PER_AD)
-                .onSuccess {
+                .onSuccess { status ->
+                    repository.recordAdReward(
+                        title = "Rewarded Ad Bonus",
+                        subtitle = "Rewarded video completed",
+                        coins = CoinRepository.REWARD_COINS_PER_AD,
+                        coinStatus = status
+                    )
                     feedbackBanner.value = RewardFeedback(
                         title = "+${CoinRepository.REWARD_COINS_PER_AD} Coins Earned!",
                         subtitle = "Rewarded ad completed.",
                         coinsDelta = CoinRepository.REWARD_COINS_PER_AD
+                    )
+                }
+                .onFailure { err ->
+                    errorMessage.value = err.message ?: "Unable to credit coins right now."
+                }
+        }
+    }
+
+    fun grantPostShortsAdCoins() {
+        viewModelScope.launch {
+            coinRepository.grantInterstitialBreakCoins(CoinRepository.POST_SHORTS_AD_COINS)
+                .onSuccess { status ->
+                    repository.recordAdReward(
+                        title = "Shorts Ad Break Bonus",
+                        subtitle = "Completed ad after 3 Shorts",
+                        coins = CoinRepository.POST_SHORTS_AD_COINS,
+                        coinStatus = status
+                    )
+                    feedbackBanner.value = RewardFeedback(
+                        title = "+${CoinRepository.POST_SHORTS_AD_COINS} Coins Earned!",
+                        subtitle = "Completed ad after 3 Shorts.",
+                        coinsDelta = CoinRepository.POST_SHORTS_AD_COINS
+                    )
+                }
+                .onFailure { err ->
+                    errorMessage.value = err.message ?: "Unable to credit coins right now."
+                }
+        }
+    }
+
+    fun grantPostGamesAdCoins() {
+        viewModelScope.launch {
+            coinRepository.grantInterstitialBreakCoins(CoinRepository.POST_GAMES_AD_COINS)
+                .onSuccess { status ->
+                    repository.recordAdReward(
+                        title = "Game Ad Break Bonus",
+                        subtitle = "Completed ad after 2 game attempts",
+                        coins = CoinRepository.POST_GAMES_AD_COINS,
+                        coinStatus = status
+                    )
+                    feedbackBanner.value = RewardFeedback(
+                        title = "+${CoinRepository.POST_GAMES_AD_COINS} Coins Earned!",
+                        subtitle = "Completed ad after 2 game attempts.",
+                        coinsDelta = CoinRepository.POST_GAMES_AD_COINS
                     )
                 }
                 .onFailure { err ->
@@ -945,7 +997,7 @@ class ClipCashViewModel(
                 val supabaseClient = SupabaseClient(sessionStore)
                 val coinRepository = (app as? ClipCashApp)?.coinRepository ?: DataStoreCoinRepository(app)
                 ClipCashViewModel(
-                    repository = ClipCashRepository(db, supabaseClient, sessionStore),
+                    repository = ClipCashRepository(db, supabaseClient, sessionStore, coinRepository),
                     coinRepository = coinRepository
                 )
             }

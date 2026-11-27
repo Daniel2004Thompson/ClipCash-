@@ -126,7 +126,7 @@ dependencies {
   implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
-  implementation(libs.play.services.ads)
+  // implementation(libs.play.services.ads)
   implementation("com.unity3d.ads:unity-ads:4.22.0")
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)

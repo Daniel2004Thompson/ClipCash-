@@ -2,6 +2,7 @@ package com.example.ads
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -73,6 +74,7 @@ class AdManager(
     private var loadedInterstitial: InterstitialAd? = null
     private var isLoadingInterstitial = false
     private var shortsWatchedSinceLastInterstitial = 0
+    private var gameAttemptsSinceLastInterstitial = 0
     private var lastInterstitialShownAtMs = 0L
 
     private var loadedRewarded: RewardedAd? = null
@@ -231,7 +233,11 @@ class AdManager(
      * Call only when a YouTube Short finishes playing on its own (video ENDED state).
      * Never call on a user swipe or tap, mid-playback, on app launch, or in background.
      */
-    fun onShortWatchedBreak(activity: Activity?, onDone: () -> Unit = {}) {
+    fun onShortWatchedBreak(
+        activity: Activity?,
+        onAdCompleted: () -> Unit = {},
+        onDone: () -> Unit = {}
+    ) {
         runOnMain {
             shortsWatchedSinceLastInterstitial += 1
             val nowMs = clock()
@@ -273,36 +279,105 @@ class AdManager(
             shortsWatchedSinceLastInterstitial = 0
             lastInterstitialShownAtMs = nowMs
 
-            var finished = false
-            fun finishOnce() {
-                if (!finished) {
-                    finished = true
-                    isShowingFullscreenAd = false
-                    preloadInterstitial()
-                    onDone()
+            showLoadedInterstitial(
+                activity = activity,
+                ad = ad,
+                onAdCompleted = onAdCompleted,
+                onDone = onDone
+            )
+        }
+    }
+
+    /**
+     * Call when a user finishes a mini-game attempt (arcade round completed or wheel spin finished).
+     * Shows an interstitial ad after every [INTERSTITIAL_GAMES_INTERVAL] attempts and invokes
+     * [onAdCompleted] ONLY when [ShowFinishState.COMPLETED] is reached.
+     */
+    fun onGameAttemptCompleted(
+        activity: Activity?,
+        onAdCompleted: () -> Unit = {},
+        onDone: () -> Unit = {}
+    ) {
+        runOnMain {
+            gameAttemptsSinceLastInterstitial += 1
+            val nowMs = clock()
+
+            if (activity == null || activity.isFinishing || activity.isDestroyed) {
+                onDone()
+                return@runOnMain
+            }
+            if (!isAppInForeground || isShowingFullscreenAd) {
+                onDone()
+                return@runOnMain
+            }
+            if (gameAttemptsSinceLastInterstitial < INTERSTITIAL_GAMES_INTERVAL) {
+                if (loadedInterstitial == null) preloadInterstitial()
+                onDone()
+                return@runOnMain
+            }
+
+            val ad = loadedInterstitial
+            if (ad == null) {
+                preloadInterstitial()
+                onDone()
+                return@runOnMain
+            }
+
+            loadedInterstitial = null
+            _isInterstitialLoaded.value = false
+            isShowingFullscreenAd = true
+            gameAttemptsSinceLastInterstitial = 0
+            lastInterstitialShownAtMs = nowMs
+
+            showLoadedInterstitial(
+                activity = activity,
+                ad = ad,
+                onAdCompleted = onAdCompleted,
+                onDone = onDone
+            )
+        }
+    }
+
+    private fun showLoadedInterstitial(
+        activity: Activity,
+        ad: InterstitialAd,
+        onAdCompleted: () -> Unit,
+        onDone: () -> Unit
+    ) {
+        var finished = false
+        fun finishOnce() {
+            if (!finished) {
+                finished = true
+                isShowingFullscreenAd = false
+                preloadInterstitial()
+                onDone()
+            }
+        }
+
+        runCatching {
+            val showConfig = ShowConfiguration.Builder().build()
+            ad.show(activity, showConfig, object : InterstitialShowListener {
+                override fun onStarted(ad: InterstitialAd) = Unit
+
+                override fun onClicked(ad: InterstitialAd) = Unit
+
+                override fun onCompleted(ad: InterstitialAd, state: ShowFinishState) {
+                    runOnMain {
+                        if (state == ShowFinishState.COMPLETED) {
+                            onAdCompleted()
+                        }
+                        finishOnce()
+                    }
                 }
-            }
 
-            runCatching {
-                val showConfig = ShowConfiguration.Builder().build()
-                ad.show(activity, showConfig, object : InterstitialShowListener {
-                    override fun onStarted(ad: InterstitialAd) = Unit
-
-                    override fun onClicked(ad: InterstitialAd) = Unit
-
-                    override fun onCompleted(ad: InterstitialAd, state: ShowFinishState) {
-                        runOnMain { finishOnce() }
-                    }
-
-                    override fun onFailed(ad: InterstitialAd, error: UnityAdsError) {
-                        Log.w(TAG, "Interstitial show failed (${error.code}): ${error.message}")
-                        runOnMain { finishOnce() }
-                    }
-                })
-            }.onFailure { throwable ->
-                Log.w(TAG, "Interstitial show threw exception", throwable)
-                finishOnce()
-            }
+                override fun onFailed(ad: InterstitialAd, error: UnityAdsError) {
+                    Log.w(TAG, "Interstitial show failed (${error.code}): ${error.message}")
+                    runOnMain { finishOnce() }
+                }
+            })
+        }.onFailure { throwable ->
+            Log.w(TAG, "Interstitial show threw exception", throwable)
+            finishOnce()
         }
     }
 
@@ -546,7 +621,14 @@ class AdManager(
         const val BANNER_WIDTH_DP = 320
         const val BANNER_HEIGHT_DP = 50
         const val INTERSTITIAL_SHORTS_INTERVAL = 3
+        const val INTERSTITIAL_GAMES_INTERVAL = 2
         const val INTERSTITIAL_MIN_GAP_MS = 60_000L
         const val INTERSTITIAL_TOUCH_GUARD_MS = 3_000L
     }
+}
+
+tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

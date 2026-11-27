@@ -21,11 +21,14 @@ import java.util.Locale
 class ClipCashRepository(
     private val database: ClipCashDatabase,
     private val supabaseClient: SupabaseClient,
-    private val sessionStore: SupabaseSessionStore
+    private val sessionStore: SupabaseSessionStore,
+    private val coinRepository: CoinRepository
 ) {
     private val dao = database.clipCashDao()
     private val syncMutex = Mutex()
     private var verifiedRemoteUserId: String? = null
+    private var syncedPublicUserId: String? = null
+    private var lastKnownServerWalletBalance: Int? = null
     private val _syncNotice = MutableStateFlow<String?>(null)
     val syncNoticeFlow: StateFlow<String?> = _syncNotice.asStateFlow()
 
@@ -128,17 +131,46 @@ class ClipCashRepository(
         if (result.isSuccess) {
             val outcome = result.getOrNull()
             if (outcome is EmailChangeVerifyResult.Completed) {
-                sessionStore.saveSession(outcome.updatedSession)
-                val currentWallet = dao.getWalletState()
-                if (currentWallet != null) {
-                    val updatedWallet = currentWallet.copy(
-                        userId = outcome.updatedSession.userId,
-                        userEmail = outcome.newEmail
-                    )
-                    dao.upsertWalletState(updatedWallet)
-                    val claimed = dao.getClaimedQuestIdsSync().toSet()
-                    val txs = dao.getRecentTransactions(40)
-                    supabaseClient.upsertProfile(outcome.updatedSession, updatedWallet, claimed, txs)
+                syncMutex.withLock {
+                    sessionStore.saveSession(outcome.updatedSession)
+                    val currentWallet = dao.getWalletState()
+                    if (currentWallet != null) {
+                        val updatedWallet = currentWallet.copy(
+                            userId = outcome.updatedSession.userId,
+                            userEmail = outcome.newEmail
+                        )
+                        dao.upsertWalletState(updatedWallet)
+                        val claimed = dao.getClaimedQuestIdsSync().toSet()
+                        val txs = dao.getRecentTransactions(25)
+                        val progress = dao.getAllClipProgressSync()
+                        val coinStatus = coinRepository.getStatus()
+                        val adsDate = coinRepository.getSyncSnapshot().adsWatchedDate.ifBlank {
+                            if (coinStatus.adsWatchedToday > 0) todayDateKey() else ""
+                        }
+                        val pushRes = supabaseClient.upsertProfile(
+                            session = outcome.updatedSession,
+                            wallet = updatedWallet,
+                            claimedQuestIds = claimed,
+                            recentTransactions = txs,
+                            clipProgress = progress,
+                            coinStatus = coinStatus,
+                            adsWatchedDate = adsDate,
+                            lastServerWalletBalance = lastKnownServerWalletBalance,
+                            ensurePublicUserRow = true
+                        )
+                        if (pushRes is SupabaseDbSyncResult.Success) {
+                            verifiedRemoteUserId = outcome.updatedSession.userId
+                            syncedPublicUserId = outcome.updatedSession.userId
+                            coinRepository.markCloudPushSucceeded(
+                                userId = outcome.updatedSession.userId,
+                                email = outcome.newEmail,
+                                syncedBalance = updatedWallet.coinBalance
+                            )
+                            _syncNotice.value = null
+                        } else {
+                            coinRepository.markCloudPushPending(outcome.updatedSession.userId, outcome.newEmail)
+                        }
+                    }
                 }
             }
         }
@@ -147,10 +179,15 @@ class ClipCashRepository(
 
     suspend fun signOut() {
         verifiedRemoteUserId = null
+        syncedPublicUserId = null
+        lastKnownServerWalletBalance = null
         supabaseClient.signOut()
+        coinRepository.clearForSignOut()
         clearLocalCache()
         _syncNotice.value = null
     }
+
+    suspend fun hasPendingCloudSync(): Boolean = coinRepository.getSyncSnapshot().pendingCloudPush
 
     private suspend fun clearLocalCache() {
         database.withTransaction {
@@ -222,75 +259,137 @@ class ClipCashRepository(
         if (localWallet != null && localWallet.userId.isNotBlank() && localWallet.userId != activeSession.userId) {
             clearLocalCache()
             verifiedRemoteUserId = null
+            syncedPublicUserId = null
+            lastKnownServerWalletBalance = null
         }
+
+        val preSyncSnapshot = coinRepository.getSyncSnapshot()
+        val legacyAdCoins = coinRepository.consumeLegacyUnmigratedAdCoins(
+            userId = activeSession.userId,
+            email = activeSession.email
+        )
 
         when (val profileRes = supabaseClient.fetchProfile(activeSession)) {
             is SupabaseDbSyncResult.Success -> {
                 val remoteProfile = profileRes.data
                 if (remoteProfile != null) {
+                    lastKnownServerWalletBalance = remoteProfile.serverWalletBalance
+                    if (remoteProfile.hasPublicUsersRow) {
+                        syncedPublicUserId = activeSession.userId
+                    }
                     hydratedSession = activeSession.copy(
-                        email = activeSession.email.ifBlank { remoteProfile.email },
-                        fullName = activeSession.fullName.ifBlank { remoteProfile.fullName },
-                        username = activeSession.username.ifBlank { remoteProfile.username },
-                        nationality = activeSession.nationality.ifBlank { remoteProfile.nationality },
-                        phoneNumber = activeSession.phoneNumber.ifBlank { remoteProfile.phoneNumber }
+                        email = remoteProfile.email.ifBlank { activeSession.email },
+                        fullName = remoteProfile.fullName.ifBlank { activeSession.fullName },
+                        username = remoteProfile.username.ifBlank { activeSession.username },
+                        nationality = remoteProfile.nationality.ifBlank { activeSession.nationality },
+                        phoneNumber = remoteProfile.phoneNumber.ifBlank { activeSession.phoneNumber }
                     )
 
-                    // If local cache belonged to this same user and never finished cloud sync yet while DB had 0/uninitialized state,
-                    // preserve locally earned coins/progress rather than overwriting them with 0.
-                    val localTxsForUser = if (localWallet != null && localWallet.userId == activeSession.userId) {
+                    val postConsumeWallet = dao.getWalletState()?.takeIf { it.userId == activeSession.userId }
+                    val localTxsForUser = if (postConsumeWallet != null) {
                         dao.getRecentTransactions(40)
                     } else {
                         emptyList()
                     }
-                    val localQuestsForUser = if (localWallet != null && localWallet.userId == activeSession.userId) {
+                    val localQuestsForUser = if (postConsumeWallet != null) {
                         dao.getClaimedQuestIdsSync().toSet()
                     } else {
                         emptySet()
                     }
-                    val shouldAdoptLocalUnsynced = localWallet != null &&
-                        localWallet.userId == activeSession.userId &&
-                        (!remoteProfile.hasWalletsRow ||
-                            (remoteProfile.wallet.coinBalance == 0 && remoteProfile.wallet.clipsWatchedCount == 0 && localWallet.clipsWatchedCount > 0))
+                    val hasPendingOfflineChanges = postConsumeWallet != null &&
+                        preSyncSnapshot.pendingCloudPush &&
+                        (preSyncSnapshot.ownerUserId.isBlank() || preSyncSnapshot.ownerUserId == activeSession.userId)
+                    val shouldAdoptLocalUnsynced = postConsumeWallet != null &&
+                        (!remoteProfile.hasWalletsRow &&
+                            remoteProfile.wallet.coinBalance == 0 &&
+                            remoteProfile.wallet.clipsWatchedCount == 0 &&
+                            postConsumeWallet.clipsWatchedCount > 0)
 
-                    val mergedBalance = if (shouldAdoptLocalUnsynced) {
-                        maxOf(remoteProfile.wallet.coinBalance, localWallet.coinBalance)
+                    val mergedBalance = when {
+                        postConsumeWallet != null && hasPendingOfflineChanges -> {
+                            val baseBalance = preSyncSnapshot.lastSyncedBalance ?: 150
+                            val offlineDelta = postConsumeWallet.coinBalance - baseBalance
+                            (remoteProfile.wallet.coinBalance + offlineDelta + legacyAdCoins).coerceAtLeast(0)
+                        }
+                        postConsumeWallet != null && shouldAdoptLocalUnsynced -> {
+                            (maxOf(remoteProfile.wallet.coinBalance, postConsumeWallet.coinBalance) + legacyAdCoins).coerceAtLeast(0)
+                        }
+                        else -> (remoteProfile.wallet.coinBalance + legacyAdCoins).coerceAtLeast(0)
+                    }
+                    val localTotalEarned = postConsumeWallet?.totalEarnedCoins ?: 0
+                    val localEarnedDelta = if (hasPendingOfflineChanges) {
+                        (localTotalEarned - (preSyncSnapshot.lastSyncedBalance ?: 150)).coerceAtLeast(0)
                     } else {
-                        remoteProfile.wallet.coinBalance
+                        0
                     }
                     val syncedWallet = remoteProfile.wallet.copy(
                         userId = activeSession.userId,
                         userEmail = hydratedSession.email.ifBlank { remoteProfile.wallet.userEmail },
                         coinBalance = mergedBalance,
                         totalEarnedCoins = maxOf(
-                            remoteProfile.wallet.totalEarnedCoins,
-                            if (shouldAdoptLocalUnsynced) localWallet.totalEarnedCoins else 0,
+                            remoteProfile.wallet.totalEarnedCoins + localEarnedDelta + legacyAdCoins,
+                            if (shouldAdoptLocalUnsynced) localTotalEarned + legacyAdCoins else 0,
                             mergedBalance
                         ),
                         streakDays = maxOf(
                             remoteProfile.wallet.streakDays,
-                            if (shouldAdoptLocalUnsynced) localWallet.streakDays else 0
+                            postConsumeWallet?.streakDays ?: 0
                         ),
                         lastCheckInDate = remoteProfile.wallet.lastCheckInDate.ifBlank {
-                            if (shouldAdoptLocalUnsynced) localWallet.lastCheckInDate else ""
+                            postConsumeWallet?.lastCheckInDate.orEmpty()
                         },
                         lastFreeSpinDate = remoteProfile.wallet.lastFreeSpinDate.ifBlank {
-                            if (shouldAdoptLocalUnsynced) localWallet.lastFreeSpinDate else ""
+                            postConsumeWallet?.lastFreeSpinDate.orEmpty()
                         },
                         clipsWatchedCount = maxOf(
                             remoteProfile.wallet.clipsWatchedCount,
-                            if (shouldAdoptLocalUnsynced) localWallet.clipsWatchedCount else 0
+                            postConsumeWallet?.clipsWatchedCount ?: 0
                         ),
                         gamesPlayedCount = maxOf(
                             remoteProfile.wallet.gamesPlayedCount,
-                            if (shouldAdoptLocalUnsynced) localWallet.gamesPlayedCount else 0
+                            postConsumeWallet?.gamesPlayedCount ?: 0
                         )
                     )
                     val mergedQuests = remoteProfile.claimedQuestIds + localQuestsForUser
-                    val mergedTxs = (remoteProfile.recentTransactions + localTxsForUser)
+                    val legacyTx = if (legacyAdCoins > 0) {
+                        listOf(
+                            TransactionEntity(
+                                title = "Synced Ad Coin Balance",
+                                subtitle = "Migrated prior ad rewards to cloud",
+                                amountCoins = legacyAdCoins,
+                                type = TransactionType.BONUS.name
+                            )
+                        )
+                    } else {
+                        emptyList()
+                    }
+                    val mergedTxs = (legacyTx + remoteProfile.recentTransactions + localTxsForUser)
                         .distinctBy { "${it.createdAt}_${it.title}_${it.amountCoins}" }
                         .sortedByDescending { it.createdAt }
                         .take(40)
+
+                    val localProgressForUser = if (postConsumeWallet != null) {
+                        dao.getAllClipProgressSync()
+                    } else {
+                        emptyList()
+                    }
+                    val mergedProgress = buildList {
+                        val byId = LinkedHashMap<String, ClipProgressEntity>()
+                        for (prog in remoteProfile.clipProgress + localProgressForUser) {
+                            val prev = byId[prog.clipId]
+                            byId[prog.clipId] = if (prev == null) {
+                                prog
+                            } else {
+                                ClipProgressEntity(
+                                    clipId = prog.clipId,
+                                    watchCount = maxOf(prev.watchCount, prog.watchCount),
+                                    lastWatchedAt = maxOf(prev.lastWatchedAt, prog.lastWatchedAt),
+                                    earnedCoinsTotal = maxOf(prev.earnedCoinsTotal, prog.earnedCoinsTotal)
+                                )
+                            }
+                        }
+                        addAll(byId.values)
+                    }
 
                     database.withTransaction {
                         dao.upsertWalletState(syncedWallet)
@@ -306,6 +405,10 @@ class ClipCashRepository(
                             )
                         }
                         dao.insertTransactions(displayTxs)
+                        dao.clearClipProgress()
+                        for (prog in mergedProgress) {
+                            dao.upsertClipProgress(prog)
+                        }
                         backfillClipProgressFromTransactions(displayTxs)
                         dao.clearClaimedQuests()
                         if (mergedQuests.isNotEmpty()) {
@@ -313,15 +416,48 @@ class ClipCashRepository(
                         }
                     }
 
-                    if (!remoteProfile.hasWalletsRow || shouldAdoptLocalUnsynced) {
+                    coinRepository.applySyncedCloudState(
+                        userId = hydratedSession.userId,
+                        email = hydratedSession.email,
+                        balance = syncedWallet.coinBalance,
+                        adsWatchedToday = remoteProfile.adsWatchedToday,
+                        adsWatchedDate = remoteProfile.adsWatchedDate,
+                        lastRewardedAtMs = remoteProfile.lastRewardedAtMs,
+                        lastSyncedBalance = syncedWallet.coinBalance,
+                        pendingCloudPush = hasPendingOfflineChanges || legacyAdCoins > 0
+                    )
+
+                    val needsPush = hasPendingOfflineChanges ||
+                        shouldAdoptLocalUnsynced ||
+                        legacyAdCoins > 0 ||
+                        !remoteProfile.hasPublicUsersRow
+                    if (needsPush) {
+                        val currentCoinStatus = coinRepository.getStatus()
+                        val currentProgress = dao.getAllClipProgressSync()
+                        val pushAdsDate = coinRepository.getSyncSnapshot().adsWatchedDate.ifBlank {
+                            if (currentCoinStatus.adsWatchedToday > 0) todayDateKey() else remoteProfile.adsWatchedDate
+                        }
                         val pushRes = supabaseClient.upsertProfile(
                             session = hydratedSession,
                             wallet = syncedWallet,
                             claimedQuestIds = mergedQuests,
-                            recentTransactions = mergedTxs
+                            recentTransactions = mergedTxs,
+                            clipProgress = currentProgress,
+                            coinStatus = currentCoinStatus,
+                            adsWatchedDate = pushAdsDate,
+                            lastServerWalletBalance = lastKnownServerWalletBalance,
+                            ensurePublicUserRow = !remoteProfile.hasPublicUsersRow
                         )
                         when (pushRes) {
-                            is SupabaseDbSyncResult.Success -> verifiedRemoteUserId = activeSession.userId
+                            is SupabaseDbSyncResult.Success -> {
+                                verifiedRemoteUserId = activeSession.userId
+                                syncedPublicUserId = activeSession.userId
+                                coinRepository.markCloudPushSucceeded(
+                                    userId = hydratedSession.userId,
+                                    email = hydratedSession.email,
+                                    syncedBalance = syncedWallet.coinBalance
+                                )
+                            }
                             SupabaseDbSyncResult.TableNotProvisioned -> syncNotice = "Cloud sync unavailable — saving locally."
                             is SupabaseDbSyncResult.Error -> syncNotice = pushRes.message
                         }
@@ -333,18 +469,18 @@ class ClipCashRepository(
                         sessionStore.saveSession(hydratedSession)
                     }
                 } else {
-                    syncNotice = ensureInitializedAndPush(activeSession)
+                    syncNotice = ensureInitializedAndPush(activeSession, legacyAdCoins)
                     if (syncNotice == null) {
                         verifiedRemoteUserId = activeSession.userId
                     }
                 }
             }
             SupabaseDbSyncResult.TableNotProvisioned -> {
-                ensureInitializedLocalOnly(activeSession)
+                ensureInitializedLocalOnly(activeSession, legacyAdCoins)
                 syncNotice = "Cloud sync unavailable — saving locally."
             }
             is SupabaseDbSyncResult.Error -> {
-                ensureInitializedLocalOnly(activeSession)
+                ensureInitializedLocalOnly(activeSession, legacyAdCoins)
                 syncNotice = profileRes.message
             }
         }
@@ -377,15 +513,18 @@ class ClipCashRepository(
         }
     }
 
-    private suspend fun ensureInitializedLocalOnly(session: SupabaseSession) {
+    private suspend fun ensureInitializedLocalOnly(session: SupabaseSession, legacyAdCoins: Int = 0) {
+        var resolvedWallet: WalletStateEntity? = null
         database.withTransaction {
-            if (dao.getWalletState() == null) {
-                dao.upsertWalletState(
-                    WalletStateEntity(
-                        userId = session.userId,
-                        userEmail = session.email
-                    )
+            val existing = dao.getWalletState()
+            if (existing == null) {
+                val initial = WalletStateEntity(
+                    userId = session.userId,
+                    userEmail = session.email,
+                    coinBalance = 150 + legacyAdCoins,
+                    totalEarnedCoins = 150 + legacyAdCoins
                 )
+                dao.upsertWalletState(initial)
                 dao.insertTransaction(
                     TransactionEntity(
                         title = "Welcome Bonus",
@@ -394,11 +533,56 @@ class ClipCashRepository(
                         type = TransactionType.BONUS.name
                     )
                 )
+                if (legacyAdCoins > 0) {
+                    dao.insertTransaction(
+                        TransactionEntity(
+                            title = "Synced Ad Coin Balance",
+                            subtitle = "Migrated prior ad rewards",
+                            amountCoins = legacyAdCoins,
+                            type = TransactionType.BONUS.name
+                        )
+                    )
+                }
+                resolvedWallet = initial
+            } else if (legacyAdCoins > 0) {
+                val updated = existing.copy(
+                    userId = session.userId,
+                    userEmail = session.email,
+                    coinBalance = existing.coinBalance + legacyAdCoins,
+                    totalEarnedCoins = existing.totalEarnedCoins + legacyAdCoins
+                )
+                dao.upsertWalletState(updated)
+                dao.insertTransaction(
+                    TransactionEntity(
+                        title = "Synced Ad Coin Balance",
+                        subtitle = "Migrated prior ad rewards",
+                        amountCoins = legacyAdCoins,
+                        type = TransactionType.BONUS.name
+                    )
+                )
+                resolvedWallet = updated
+            } else {
+                resolvedWallet = existing
             }
         }
+        val wallet = resolvedWallet ?: return
+        val status = coinRepository.getStatus()
+        val adsDate = coinRepository.getSyncSnapshot().adsWatchedDate.ifBlank {
+            if (status.adsWatchedToday > 0) todayDateKey() else ""
+        }
+        coinRepository.applySyncedCloudState(
+            userId = session.userId,
+            email = session.email,
+            balance = wallet.coinBalance,
+            adsWatchedToday = status.adsWatchedToday,
+            adsWatchedDate = adsDate,
+            lastRewardedAtMs = status.lastRewardedAtMs,
+            lastSyncedBalance = 150,
+            pendingCloudPush = true
+        )
     }
 
-    private suspend fun ensureInitializedAndPush(session: SupabaseSession): String? {
+    private suspend fun ensureInitializedAndPush(session: SupabaseSession, legacyAdCoins: Int = 0): String? {
         val welcomeTx = TransactionEntity(
             title = "Welcome Bonus",
             subtitle = "Starter reward for joining ClipCash",
@@ -407,34 +591,116 @@ class ClipCashRepository(
         )
         val initialWallet = WalletStateEntity(
             userId = session.userId,
-            userEmail = session.email
+            userEmail = session.email,
+            coinBalance = 150 + legacyAdCoins,
+            totalEarnedCoins = 150 + legacyAdCoins
         )
         database.withTransaction {
             val existing = dao.getWalletState()
             if (existing == null) {
                 dao.upsertWalletState(initialWallet)
                 dao.insertTransaction(welcomeTx)
-            } else if (existing.userId.isBlank() || existing.userEmail.isBlank()) {
-                dao.upsertWalletState(existing.copy(userId = session.userId, userEmail = session.email))
+                if (legacyAdCoins > 0) {
+                    dao.insertTransaction(
+                        TransactionEntity(
+                            title = "Synced Ad Coin Balance",
+                            subtitle = "Migrated prior ad rewards to cloud",
+                            amountCoins = legacyAdCoins,
+                            type = TransactionType.BONUS.name
+                        )
+                    )
+                }
+            } else {
+                val updated = existing.copy(
+                    userId = session.userId,
+                    userEmail = session.email,
+                    coinBalance = existing.coinBalance + legacyAdCoins,
+                    totalEarnedCoins = existing.totalEarnedCoins + legacyAdCoins
+                )
+                dao.upsertWalletState(updated)
+                if (legacyAdCoins > 0) {
+                    dao.insertTransaction(
+                        TransactionEntity(
+                            title = "Synced Ad Coin Balance",
+                            subtitle = "Migrated prior ad rewards to cloud",
+                            amountCoins = legacyAdCoins,
+                            type = TransactionType.BONUS.name
+                        )
+                    )
+                }
             }
         }
         val currentWallet = dao.getWalletState() ?: initialWallet
         val claimed = dao.getClaimedQuestIdsSync().toSet()
-        val recentTxs = dao.getRecentTransactions(40)
-        return when (val profilePush = supabaseClient.upsertProfile(session, currentWallet, claimed, recentTxs)) {
-            is SupabaseDbSyncResult.Success -> null
-            SupabaseDbSyncResult.TableNotProvisioned -> "Cloud sync unavailable — saving locally."
-            is SupabaseDbSyncResult.Error -> profilePush.message
+        val recentTxs = dao.getRecentTransactions(25)
+        val currentProgress = dao.getAllClipProgressSync()
+        val status = coinRepository.getStatus()
+        val adsDate = coinRepository.getSyncSnapshot().adsWatchedDate.ifBlank {
+            if (status.adsWatchedToday > 0) todayDateKey() else ""
+        }
+        return when (
+            val profilePush = supabaseClient.upsertProfile(
+                session = session,
+                wallet = currentWallet,
+                claimedQuestIds = claimed,
+                recentTransactions = recentTxs,
+                clipProgress = currentProgress,
+                coinStatus = status,
+                adsWatchedDate = adsDate,
+                lastServerWalletBalance = lastKnownServerWalletBalance,
+                ensurePublicUserRow = true
+            )
+        ) {
+            is SupabaseDbSyncResult.Success -> {
+                syncedPublicUserId = session.userId
+                coinRepository.applySyncedCloudState(
+                    userId = session.userId,
+                    email = session.email,
+                    balance = currentWallet.coinBalance,
+                    adsWatchedToday = status.adsWatchedToday,
+                    adsWatchedDate = adsDate,
+                    lastRewardedAtMs = status.lastRewardedAtMs,
+                    lastSyncedBalance = currentWallet.coinBalance,
+                    pendingCloudPush = false
+                )
+                null
+            }
+            SupabaseDbSyncResult.TableNotProvisioned -> {
+                coinRepository.markCloudPushPending(session.userId, session.email)
+                "Cloud sync unavailable — saving locally."
+            }
+            is SupabaseDbSyncResult.Error -> {
+                coinRepository.markCloudPushPending(session.userId, session.email)
+                profilePush.message
+            }
         }
     }
 
+    private suspend fun getOrCreateWalletForSession(session: SupabaseSession?): WalletStateEntity {
+        val existing = dao.getWalletState()
+        if (existing != null) {
+            val uid = existing.userId.ifBlank { session?.userId.orEmpty() }
+            val email = session?.email?.takeIf { it.isNotBlank() } ?: existing.userEmail
+            return if (uid != existing.userId || email != existing.userEmail) {
+                existing.copy(userId = uid, userEmail = email)
+            } else {
+                existing
+            }
+        }
+        return WalletStateEntity(
+            userId = session?.userId.orEmpty(),
+            userEmail = session?.email.orEmpty()
+        )
+    }
+
     suspend fun claimDailyCheckIn(): Int {
+        val session = sessionStore.getSession()
         val today = todayDateKey()
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         val bonus = database.withTransaction {
-            val current = dao.getWalletState() ?: WalletStateEntity()
+            val current = getOrCreateWalletForSession(session)
             if (current.lastCheckInDate == today) return@withTransaction 0
 
             val newStreak = current.streakDays + 1
@@ -536,11 +802,12 @@ class ClipCashRepository(
     }
 
     suspend fun recordClipWatched(clip: VideoClip): Int {
+        val session = sessionStore.getSession()
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         val reward = database.withTransaction {
-            val current = dao.getWalletState() ?: WalletStateEntity()
+            val current = getOrCreateWalletForSession(session)
             val earned = clip.rewardCoins
             val updated = current.copy(
                 coinBalance = current.coinBalance + earned,
@@ -577,12 +844,13 @@ class ClipCashRepository(
         recordArcadeGameReward(gameTitle = "Coin Catcher Run", coinsWon = coinsWon)
 
     suspend fun recordArcadeGameReward(gameTitle: String, coinsWon: Int): Int {
+        val session = sessionStore.getSession()
         val safeCoins = coinsWon.coerceAtLeast(0)
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         database.withTransaction {
-            val current = dao.getWalletState() ?: WalletStateEntity()
+            val current = getOrCreateWalletForSession(session)
             val updated = current.copy(
                 coinBalance = current.coinBalance + safeCoins,
                 totalEarnedCoins = current.totalEarnedCoins + safeCoins,
@@ -607,13 +875,14 @@ class ClipCashRepository(
     }
 
     suspend fun spinLuckyWheel(prizeCoins: Int, usedFreeSpin: Boolean): Result<Int> {
+        val session = sessionStore.getSession()
         val today = todayDateKey()
         val spinCost = if (usedFreeSpin) 0 else 25
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         val result = database.withTransaction {
-            val current = dao.getWalletState() ?: WalletStateEntity()
+            val current = getOrCreateWalletForSession(session)
             if (usedFreeSpin && current.lastFreeSpinDate == today) {
                 return@withTransaction Result.failure(IllegalStateException("Daily free spin already used"))
             }
@@ -647,12 +916,13 @@ class ClipCashRepository(
     }
 
     suspend fun claimQuest(quest: QuestItem): Int {
+        val session = sessionStore.getSession()
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         val earned = database.withTransaction {
             if (dao.getClaimedQuest(quest.id) != null) return@withTransaction 0
-            val current = dao.getWalletState() ?: WalletStateEntity()
+            val current = getOrCreateWalletForSession(session)
             val updated = current.copy(
                 coinBalance = current.coinBalance + quest.rewardCoins,
                 totalEarnedCoins = current.totalEarnedCoins + quest.rewardCoins
@@ -678,12 +948,13 @@ class ClipCashRepository(
     }
 
     suspend fun redeemReward(reward: RewardOption, note: String = ""): Result<String> {
+        val session = sessionStore.getSession()
         val cleanNote = note.trim()
         var newWallet: WalletStateEntity? = null
         var newTx: TransactionEntity? = null
 
         val result = database.withTransaction {
-            val current = dao.getWalletState() ?: WalletStateEntity()
+            val current = getOrCreateWalletForSession(session)
             if (current.coinBalance < reward.coinCost) {
                 return@withTransaction Result.failure(
                     IllegalStateException("You need ${reward.coinCost - current.coinBalance} more coins.")
@@ -715,14 +986,59 @@ class ClipCashRepository(
         return result
     }
 
-    private suspend fun pushWalletAndTx(wallet: WalletStateEntity?, tx: TransactionEntity?) {
-        val session = sessionStore.getSession() ?: return
+    suspend fun recordAdReward(
+        title: String,
+        subtitle: String,
+        coins: Int,
+        coinStatus: CoinRewardStatus
+    ): Int {
+        if (coins <= 0) return 0
+        val session = sessionStore.getSession()
+        var newWallet: WalletStateEntity? = null
+        var newTx: TransactionEntity? = null
+
+        database.withTransaction {
+            val current = getOrCreateWalletForSession(session)
+            val updated = current.copy(
+                coinBalance = current.coinBalance + coins,
+                totalEarnedCoins = current.totalEarnedCoins + coins
+            )
+            val tx = TransactionEntity(
+                title = title,
+                subtitle = subtitle,
+                amountCoins = coins,
+                type = TransactionType.BONUS.name
+            )
+            dao.upsertWalletState(updated)
+            dao.insertTransaction(tx)
+            newWallet = updated
+            newTx = tx
+        }
+
+        pushWalletAndTx(newWallet, newTx, coinStatusOverride = coinStatus)
+        return coins
+    }
+
+    private suspend fun pushWalletAndTx(
+        wallet: WalletStateEntity?,
+        tx: TransactionEntity?,
+        coinStatusOverride: CoinRewardStatus? = null
+    ) = syncMutex.withLock {
+        val session = sessionStore.getSession() ?: return@withLock
+        coinRepository.markCloudPushPending(session.userId, session.email)
+
         var walletToPush = wallet?.copy(
             userId = session.userId,
             userEmail = session.email
         )
         var claimedQuests = dao.getClaimedQuestIdsSync().toSet()
-        var recentTxs = dao.getRecentTransactions(40)
+        var recentTxs = dao.getRecentTransactions(25)
+        var allProgress = dao.getAllClipProgressSync()
+        var effectiveCoinStatus = coinStatusOverride ?: coinRepository.getStatus()
+        val syncSnapshot = coinRepository.getSyncSnapshot()
+        var effectiveAdsDate = syncSnapshot.adsWatchedDate.ifBlank {
+            if (effectiveCoinStatus.adsWatchedToday > 0) todayDateKey() else ""
+        }
 
         if (walletToPush != null && verifiedRemoteUserId != session.userId) {
             when (val verifyRes = supabaseClient.fetchProfile(session)) {
@@ -730,19 +1046,28 @@ class ClipCashRepository(
                     val remoteProfile = verifyRes.data
                     val remote = remoteProfile?.wallet
                     verifiedRemoteUserId = session.userId
-                    if (remote != null && remoteProfile.hasWalletsRow) {
-                        val deltaBalance = walletToPush.coinBalance - 150
-                        val deltaTotal = (walletToPush.totalEarnedCoins - 150).coerceAtLeast(0)
+                    if (remote != null) {
+                        if (remoteProfile.hasPublicUsersRow) {
+                            syncedPublicUserId = session.userId
+                        }
+                        lastKnownServerWalletBalance = remoteProfile.serverWalletBalance
+                        val baseBalance = if (syncSnapshot.ownerUserId == session.userId && syncSnapshot.lastSyncedBalance != null) {
+                            syncSnapshot.lastSyncedBalance
+                        } else {
+                            150
+                        }
+                        val deltaBalance = walletToPush.coinBalance - baseBalance
+                        val deltaTotal = (walletToPush.totalEarnedCoins - baseBalance).coerceAtLeast(0)
                         walletToPush = remote.copy(
                             userId = session.userId,
-                            userEmail = session.email.ifBlank { remote.userEmail },
+                            userEmail = remoteProfile.email.ifBlank { session.email.ifBlank { remote.userEmail } },
                             coinBalance = (remote.coinBalance + deltaBalance).coerceAtLeast(0),
                             totalEarnedCoins = maxOf(
                                 remote.totalEarnedCoins + deltaTotal,
                                 (remote.coinBalance + deltaBalance).coerceAtLeast(0)
                             ),
-                            clipsWatchedCount = remote.clipsWatchedCount + walletToPush.clipsWatchedCount,
-                            gamesPlayedCount = remote.gamesPlayedCount + walletToPush.gamesPlayedCount,
+                            clipsWatchedCount = maxOf(remote.clipsWatchedCount, walletToPush.clipsWatchedCount),
+                            gamesPlayedCount = maxOf(remote.gamesPlayedCount, walletToPush.gamesPlayedCount),
                             streakDays = maxOf(remote.streakDays, walletToPush.streakDays),
                             lastCheckInDate = walletToPush.lastCheckInDate.ifBlank { remote.lastCheckInDate },
                             lastFreeSpinDate = walletToPush.lastFreeSpinDate.ifBlank { remote.lastFreeSpinDate }
@@ -752,8 +1077,39 @@ class ClipCashRepository(
                             .distinctBy { "${it.createdAt}_${it.title}_${it.amountCoins}" }
                             .sortedByDescending { it.createdAt }
                             .take(40)
+                        val progressById = LinkedHashMap<String, ClipProgressEntity>()
+                        for (prog in remoteProfile.clipProgress + allProgress) {
+                            val prev = progressById[prog.clipId]
+                            progressById[prog.clipId] = if (prev == null) {
+                                prog
+                            } else {
+                                ClipProgressEntity(
+                                    clipId = prog.clipId,
+                                    watchCount = maxOf(prev.watchCount, prog.watchCount),
+                                    lastWatchedAt = maxOf(prev.lastWatchedAt, prog.lastWatchedAt),
+                                    earnedCoinsTotal = maxOf(prev.earnedCoinsTotal, prog.earnedCoinsTotal)
+                                )
+                            }
+                        }
+                        allProgress = progressById.values.toList()
+                        val today = todayDateKey()
+                        val mergedAdsToday = if (remoteProfile.adsWatchedDate == today) {
+                            maxOf(remoteProfile.adsWatchedToday, effectiveCoinStatus.adsWatchedToday)
+                        } else {
+                            effectiveCoinStatus.adsWatchedToday
+                        }
+                        val mergedLastRewarded = maxOf(remoteProfile.lastRewardedAtMs, effectiveCoinStatus.lastRewardedAtMs)
+                        effectiveAdsDate = if (mergedAdsToday > 0) today else remoteProfile.adsWatchedDate
+                        effectiveCoinStatus = effectiveCoinStatus.copy(
+                            balance = walletToPush.coinBalance,
+                            adsWatchedToday = mergedAdsToday,
+                            lastRewardedAtMs = mergedLastRewarded
+                        )
                         database.withTransaction {
                             dao.upsertWalletState(walletToPush)
+                            for (prog in allProgress) {
+                                dao.upsertClipProgress(prog)
+                            }
                             if (claimedQuests.isNotEmpty()) {
                                 dao.insertClaimedQuests(claimedQuests.map { ClaimedQuestEntity(it) })
                             }
@@ -762,19 +1118,45 @@ class ClipCashRepository(
                 }
                 SupabaseDbSyncResult.TableNotProvisioned -> {
                     _syncNotice.value = "Cloud sync unavailable — saving locally."
-                    return
+                    return@withLock
                 }
                 is SupabaseDbSyncResult.Error -> {
                     _syncNotice.value = verifyRes.message
-                    return
+                    return@withLock
                 }
             }
         }
 
         if (walletToPush != null) {
-            when (val res = supabaseClient.upsertProfile(session, walletToPush, claimedQuests, recentTxs)) {
+            val needPublicRow = syncedPublicUserId != session.userId
+            when (
+                val res = supabaseClient.upsertProfile(
+                    session = session,
+                    wallet = walletToPush,
+                    claimedQuestIds = claimedQuests,
+                    recentTransactions = recentTxs,
+                    clipProgress = allProgress,
+                    coinStatus = effectiveCoinStatus,
+                    adsWatchedDate = effectiveAdsDate,
+                    lastServerWalletBalance = lastKnownServerWalletBalance,
+                    ensurePublicUserRow = needPublicRow
+                )
+            ) {
                 is SupabaseDbSyncResult.Success -> {
                     verifiedRemoteUserId = session.userId
+                    if (needPublicRow) {
+                        syncedPublicUserId = session.userId
+                    }
+                    coinRepository.applySyncedCloudState(
+                        userId = session.userId,
+                        email = walletToPush.userEmail.ifBlank { session.email },
+                        balance = walletToPush.coinBalance,
+                        adsWatchedToday = effectiveCoinStatus.adsWatchedToday,
+                        adsWatchedDate = effectiveAdsDate,
+                        lastRewardedAtMs = effectiveCoinStatus.lastRewardedAtMs,
+                        lastSyncedBalance = walletToPush.coinBalance,
+                        pendingCloudPush = false
+                    )
                     _syncNotice.value = null
                 }
                 SupabaseDbSyncResult.TableNotProvisioned -> {
