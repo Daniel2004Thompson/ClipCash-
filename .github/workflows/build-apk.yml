@@ -2,8 +2,8 @@ name: Build Debug APK
 
 on:
   push:
-    tags-ignore:
-      - 'v*'
+    branches:
+      - '**'
   workflow_dispatch:
 
 jobs:
