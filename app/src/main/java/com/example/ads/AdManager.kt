@@ -5,7 +5,10 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -394,13 +397,13 @@ class AdManager(
         val sdkReady by isInitialized.collectAsStateWithLifecycle()
         if (!sdkReady) return
 
-        val bannerView = remember(activity) {
-            BannerView(
+        val bannerContainer = remember(activity) {
+            val banner = BannerView(
                 activity,
                 BANNER_PLACEMENT_ID,
                 UnityBannerSize(BANNER_WIDTH_DP, BANNER_HEIGHT_DP)
             ).apply {
-                layoutParams = ViewGroup.LayoutParams(
+                layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
@@ -425,11 +428,17 @@ class AdManager(
                 }
                 runCatching { load() }
             }
+
+            AdsGuardContainer(
+                context = activity,
+                bannerView = banner,
+                guardEnabled = BANNER_TOUCH_WALL
+            )
         }
 
-        DisposableEffect(bannerView) {
+        DisposableEffect(bannerContainer) {
             onDispose {
-                runCatching { bannerView.destroy() }
+                runCatching { bannerContainer.destroyBanner() }
             }
         }
 
@@ -439,7 +448,7 @@ class AdManager(
                 .testTag("unity_banner_container")
         ) {
             AndroidView(
-                factory = { bannerView },
+                factory = { bannerContainer },
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("unity_banner_view")
@@ -460,6 +469,58 @@ class AdManager(
                         }
                 )
             }
+        }
+    }
+
+    /**
+     * Transparent Android-level screen/ads guard placed directly over [BannerView].
+     * The banner stays 100% visible, while every touch, WebView tap, and focus event is
+     * absorbed by the guard without ever reaching the ad.
+     */
+    private class AdsGuardContainer(
+        context: Context,
+        private val bannerView: BannerView,
+        private val guardEnabled: Boolean
+    ) : FrameLayout(context) {
+        init {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            addView(bannerView)
+
+            if (guardEnabled) {
+                descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                val shieldView = View(context).apply {
+                    layoutParams = LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    isClickable = true
+                    isFocusable = false
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    setOnTouchListener { v, event ->
+                        if (event.action == MotionEvent.ACTION_UP) {
+                            v.performClick()
+                        }
+                        true
+                    }
+                }
+                addView(shieldView)
+            }
+        }
+
+        override fun onInterceptTouchEvent(ev: MotionEvent?): Boolean {
+            return guardEnabled || super.onInterceptTouchEvent(ev)
+        }
+
+        override fun onTouchEvent(event: MotionEvent?): Boolean {
+            return if (guardEnabled) true else super.onTouchEvent(event)
+        }
+
+        fun destroyBanner() {
+            bannerView.destroy()
+            removeAllViews()
         }
     }
 
