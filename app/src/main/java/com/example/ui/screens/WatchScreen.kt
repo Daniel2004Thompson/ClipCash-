@@ -945,6 +945,7 @@ private fun VideoClipCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
+                        modifier = Modifier.weight(1f, fill = false),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
@@ -955,12 +956,14 @@ private fun VideoClipCard(
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = "YouTube Short",
+                            text = "ClipCash Shorts",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold
                             ),
-                            color = Color.White.copy(alpha = 0.88f)
+                            color = Color.White.copy(alpha = 0.88f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 

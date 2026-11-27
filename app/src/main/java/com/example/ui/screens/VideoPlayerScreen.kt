@@ -1015,6 +1015,7 @@ private class ClipShortsWebController(
                                 }
                             });
                         }
+                        if (v.loop) v.loop = false;
                         if (v.paused && !window.__ccUserPaused) {
                             window.__ccTryAutoplay(true);
                         }
