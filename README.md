@@ -38,7 +38,7 @@ ClipCash is a modern Android rewards app built with Kotlin and Jetpack Compose (
   - Gradle `9.3.1`
   - JDK `21`
   - `minSdk`: `24` | `targetSdk`: `36` | `compileSdk`: `36.1`
-  - Current Version: `6.0.0` (`versionCode = 6`)
+  - Current Version: `7.0.0` (`versionCode = 7`)
 
 ---
 
@@ -111,5 +111,5 @@ gradle :app:testDebugUnitTest
 
 This repository includes `.github/workflows/build-apk.yml`, which automatically builds a debug APK on every branch push (and manual `workflow_dispatch` runs), publishes a public **GitHub Release** for each version, and uploads an Actions artifact.
 
-1. Open the **Releases** page on the right side of the GitHub repository to download any published version directly (e.g. **`ClipCash-v6.0.0.apk`**) — no GitHub login required.
-2. You can also open the **Actions** tab, select any **Build Debug APK** run, and download **`clipcash-debug-apk-v6.0.0`** from **Artifacts**.
+1. Open the **Releases** page on the right side of the GitHub repository to download any published version directly (e.g. **`ClipCash-v7.0.0.apk`**) — no GitHub login required.
+2. You can also open the **Actions** tab, select any **Build Debug APK** run, and download **`ClipCash-v7.0.0.apk`** from **Artifacts**.

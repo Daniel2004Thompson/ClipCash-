@@ -6,6 +6,8 @@ import com.example.model.ClipCatalog
 import com.example.model.ClipCategory
 import com.example.model.VideoClip
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -15,7 +17,15 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InterruptedIOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import javax.net.ssl.SSLException
 
 sealed interface SupabaseSignUpResult {
     data class VerificationRequired(
@@ -35,6 +45,18 @@ sealed interface SupabaseSignInResult {
         val email: String,
         val message: String
     ) : SupabaseSignInResult
+}
+
+sealed interface EmailChangeRequestResult {
+    data class VerificationRequired(
+        val emailToVerify: String,
+        val message: String
+    ) : EmailChangeRequestResult
+
+    data class CompletedImmediately(
+        val newEmail: String,
+        val updatedSession: SupabaseSession
+    ) : EmailChangeRequestResult
 }
 
 sealed interface EmailChangeVerifyResult {
@@ -79,7 +101,8 @@ data class ShortsPageResult(
 )
 
 class SupabaseClient(
-    private val sessionStore: SupabaseSessionStore
+    private val sessionStore: SupabaseSessionStore,
+    private val networkMonitor: NetworkMonitor? = null
 ) {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -129,7 +152,7 @@ class SupabaseClient(
                 .post(payload.toString().toRequestBody(jsonMediaType))
                 .build()
 
-            runCatching {
+            runSafeCall("Unable to sign in right now. Please try again.") {
                 httpClient.newCall(request).execute().use { response ->
                     val body = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
@@ -162,7 +185,9 @@ class SupabaseClient(
         }
 
     suspend fun resendSignInCode(email: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { sendEmailOtpBlocking(email = email.trim()) }
+        runSafeCall("Unable to resend verification code right now.") {
+            sendEmailOtpBlocking(email = email.trim())
+        }
     }
 
     suspend fun signUp(
@@ -196,7 +221,7 @@ class SupabaseClient(
             .post(payload.toString().toRequestBody(jsonMediaType))
             .build()
 
-        runCatching {
+        runSafeCall("Unable to create your account right now. Please try again.") {
             httpClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
@@ -247,7 +272,7 @@ class SupabaseClient(
 
     suspend fun resendSignUpCode(email: String, usesEmailOtpFallback: Boolean): Result<Unit> =
         withContext(Dispatchers.IO) {
-            runCatching {
+            runSafeCall("Unable to resend verification code right now.") {
                 val cleanEmail = email.trim()
                 if (usesEmailOtpFallback) {
                     sendEmailOtpBlocking(email = cleanEmail)
@@ -267,7 +292,7 @@ class SupabaseClient(
             .post(payload.toString().toRequestBody(jsonMediaType))
             .build()
 
-        runCatching {
+        runSafeCall("Unable to send reset code right now.") {
             httpClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
@@ -279,26 +304,33 @@ class SupabaseClient(
         }
     }
 
-    suspend fun verifyAndResetPassword(
+    suspend fun verifyPasswordResetCode(
         email: String,
-        code: String,
-        newPassword: String
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+        code: String
+    ): Result<String> = withContext(Dispatchers.IO) {
         val cleanEmail = email.trim()
         val cleanCode = code.trim()
-        runCatching {
+        runSafeCall("Unable to verify reset code right now.") {
             val recoverySession = verifyOtpSessionBlocking(
                 email = cleanEmail,
                 token = cleanCode,
                 type = "recovery"
             ).getOrThrow()
+            recoverySession.accessToken
+        }
+    }
 
+    suspend fun updatePasswordWithRecoveryToken(
+        recoveryAccessToken: String,
+        newPassword: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runSafeCall("Unable to reset password right now.") {
             val updatePayload = JSONObject().apply {
                 put("password", newPassword)
             }
             val updateRequest = newGatewayRequestBuilder(
                 targetPath = "/auth/v1/user",
-                accessToken = recoverySession.accessToken
+                accessToken = recoveryAccessToken
             )
                 .addHeader("Content-Type", "application/json")
                 .put(updatePayload.toString().toRequestBody(jsonMediaType))
@@ -317,7 +349,7 @@ class SupabaseClient(
             runCatching {
                 val logoutReq = newGatewayRequestBuilder(
                     targetPath = "/auth/v1/logout",
-                    accessToken = recoverySession.accessToken
+                    accessToken = recoveryAccessToken
                 )
                     .post("{}".toRequestBody(jsonMediaType))
                     .build()
@@ -327,7 +359,46 @@ class SupabaseClient(
         }
     }
 
-    suspend fun requestEmailChange(newEmail: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun verifyAndResetPassword(
+        email: String,
+        code: String,
+        newPassword: String
+    ): Result<Unit> {
+        val token = verifyPasswordResetCode(email, code).getOrElse { return Result.failure(it) }
+        return updatePasswordWithRecoveryToken(token, newPassword)
+    }
+
+    suspend fun requestCurrentEmailVerificationOtp(email: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val cleanEmail = email.trim()
+        runSafeCall("Unable to send verification code right now.") {
+            sendEmailOtpBlocking(cleanEmail)
+        }
+    }
+
+    suspend fun verifyCurrentEmailForChange(
+        email: String,
+        code: String
+    ): Result<SupabaseSession> = withContext(Dispatchers.IO) {
+        val currentSession = sessionStore.getSession()
+        val cleanEmail = email.trim()
+        val cleanCode = code.trim()
+        verifyOtpSessionBlocking(email = cleanEmail, token = cleanCode, type = "email").map { verified ->
+            val merged = if (currentSession != null) {
+                verified.copy(
+                    fullName = verified.fullName.ifBlank { currentSession.fullName },
+                    username = verified.username.ifBlank { currentSession.username },
+                    nationality = verified.nationality.ifBlank { currentSession.nationality },
+                    phoneNumber = verified.phoneNumber.ifBlank { currentSession.phoneNumber }
+                )
+            } else {
+                verified
+            }
+            sessionStore.saveSession(merged)
+            merged
+        }
+    }
+
+    suspend fun requestEmailChange(newEmail: String): Result<EmailChangeRequestResult> = withContext(Dispatchers.IO) {
         val cleanNewEmail = newEmail.trim()
         val initialSession = sessionStore.getSession()
             ?: return@withContext Result.failure(IllegalStateException("Please sign in again to change your email."))
@@ -348,11 +419,13 @@ class SupabaseClient(
             }
         }
 
-        runCatching {
-            var (code, body) = executeUpdate(initialSession.accessToken)
+        runSafeCall("Unable to send email verification code right now.") {
+            var activeSession = initialSession
+            var (code, body) = executeUpdate(activeSession.accessToken)
             if (code == 401) {
-                val refreshed = refreshSessionIfNeeded(initialSession)
+                val refreshed = refreshSessionIfNeeded(activeSession)
                     ?: throw IllegalStateException("Session expired. Please sign in again.")
+                activeSession = refreshed
                 val retry = executeUpdate(refreshed.accessToken)
                 code = retry.first
                 body = retry.second
@@ -360,6 +433,21 @@ class SupabaseClient(
             if (code !in 200..299) {
                 throw IllegalStateException(
                     parseSupabaseError(body, "Unable to send email verification code ($code)")
+                )
+            }
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val userObj = json.optJSONObject("user") ?: json
+            val returnedEmail = userObj.optCleanString("email")
+            val pendingNewEmail = userObj.optCleanString("new_email")
+            if (returnedEmail.equals(cleanNewEmail, ignoreCase = true) && pendingNewEmail.isBlank()) {
+                EmailChangeRequestResult.CompletedImmediately(
+                    newEmail = returnedEmail,
+                    updatedSession = activeSession.copy(email = returnedEmail)
+                )
+            } else {
+                EmailChangeRequestResult.VerificationRequired(
+                    emailToVerify = pendingNewEmail.ifBlank { cleanNewEmail },
+                    message = "Verification code sent to ${pendingNewEmail.ifBlank { cleanNewEmail }}."
                 )
             }
         }
@@ -394,7 +482,7 @@ class SupabaseClient(
             }
         }
 
-        runCatching {
+        runSafeCall("Unable to verify email change right now.") {
             var activeSession = currentSession
             var (httpCode, body) = executeVerify(activeSession.accessToken)
             if (httpCode == 401) {
@@ -506,7 +594,7 @@ class SupabaseClient(
             .post(payload.toString().toRequestBody(jsonMediaType))
             .build()
 
-        return runCatching {
+        return runSafeCall("Unable to verify code right now.") {
             httpClient.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
@@ -611,21 +699,46 @@ class SupabaseClient(
             }
         }
 
-        runCatching {
+        runSafeSuspendCall("Unable to refresh ClipCash feed. Check your connection.") {
             val baseQuery = buildCategorySubQuery(rawQuery, category, pageIndex)
             // First try native pageToken if provided
             if (pageIndex > 0 && !pageToken.isNullOrBlank()) {
                 val paged = runQuery(buildCategorySubQuery(rawQuery, category, 0), pageToken)
                 val fresh = paged.clips.filter { it.videoId !in seenVideoIds }
                 if (fresh.isNotEmpty()) {
-                    return@runCatching ShortsPageResult(
+                    return@runSafeSuspendCall ShortsPageResult(
                         clips = fresh,
                         nextPageToken = paged.nextPageToken
                     )
                 }
             }
 
-            // Try rotated sub-query waves so categories & feeds expand without stopping at 10
+            // On Featured (ALL) with no search text, concurrently mix football, music, movie, food, sports & lifestyle Shorts
+            if (category == ClipCategory.ALL && rawQuery.isBlank() && pageIndex == 0) {
+                val featuredQueries = listOf(
+                    "football shorts",
+                    "music shorts",
+                    "movie shorts",
+                    "food shorts",
+                    "sports shorts",
+                    "lifestyle shorts"
+                )
+                val batches = coroutineScope {
+                    featuredQueries.map { q ->
+                        async { runCatching { runQuery(q, null) }.getOrNull() }
+                    }.map { it.await() }
+                }
+                val interleaved = interleaveClipBatches(batches.filterNotNull().map { it.clips }, seenVideoIds)
+                if (interleaved.isNotEmpty()) {
+                    val token = batches.firstNotNullOfOrNull { it?.nextPageToken }
+                    return@runSafeSuspendCall ShortsPageResult(
+                        clips = interleaved,
+                        nextPageToken = token
+                    )
+                }
+            }
+
+            // Try rotated sub-query waves so categories & feeds expand cleanly
             val collected = mutableListOf<VideoClip>()
             val localSeen = seenVideoIds.toMutableSet()
             var latestToken: String? = null
@@ -644,7 +757,7 @@ class SupabaseClient(
                         collected.add(item)
                     }
                 }
-                if (collected.size >= 8) break
+                if (collected.size >= 10) break
             }
 
             ShortsPageResult(
@@ -652,6 +765,24 @@ class SupabaseClient(
                 nextPageToken = latestToken
             )
         }
+    }
+
+    private fun interleaveClipBatches(
+        batches: List<List<VideoClip>>,
+        alreadySeen: Set<String>
+    ): List<VideoClip> {
+        val seen = alreadySeen.toMutableSet()
+        val result = mutableListOf<VideoClip>()
+        val maxLen = batches.maxOfOrNull { it.size } ?: 0
+        for (idx in 0 until maxLen) {
+            for (batch in batches) {
+                val clip = batch.getOrNull(idx) ?: continue
+                if (seen.add(clip.videoId)) {
+                    result.add(clip)
+                }
+            }
+        }
+        return result
     }
 
     private fun buildCategorySubQuery(
@@ -673,20 +804,45 @@ class SupabaseClient(
 
         val categoryPool = when (category) {
             ClipCategory.ALL -> listOf(
-                "trending shorts", "viral shorts", "funny shorts", "amazing shorts",
-                "satisfying shorts", "comedy shorts", "life hacks shorts", "cool gadgets shorts",
-                "sports highlights shorts", "travel shorts", "animals shorts", "science shorts",
-                "dance shorts", "art shorts", "food shorts", "magic tricks shorts"
+                "football shorts", "music shorts", "movie shorts", "food shorts",
+                "sports shorts", "lifestyle shorts", "trending shorts", "viral shorts",
+                "soccer goals shorts", "movie scenes shorts", "street food shorts", "daily routine shorts",
+                "sports highlights shorts", "comedy shorts", "gaming shorts", "tech gadgets shorts"
             )
             ClipCategory.TRENDING -> listOf(
                 "viral shorts", "trending shorts today", "popular shorts", "crazy moments shorts",
                 "top viral shorts", "most watched shorts", "viral challenges shorts", "funny viral shorts",
                 "unbelievable shorts", "trending reels shorts", "best viral clips shorts", "epic fails shorts"
             )
+            ClipCategory.FOOTBALL -> listOf(
+                "football shorts", "soccer goals shorts", "football skills shorts", "champions league shorts",
+                "premier league shorts", "free kick goals shorts", "football highlights shorts", "street football tricks shorts",
+                "goalkeeper saves shorts", "football match moments shorts", "world cup football shorts", "football dribble shorts"
+            )
             ClipCategory.MUSIC -> listOf(
                 "music shorts", "singing shorts", "guitar solo shorts", "piano cover shorts",
                 "hip hop beat shorts", "dance music shorts", "remix shorts", "live concert shorts",
                 "vocal cover shorts", "drumming shorts", "violin shorts", "acoustic cover shorts"
+            )
+            ClipCategory.MOVIES -> listOf(
+                "movie shorts", "movie scenes shorts", "action movie clips shorts", "movie trailers shorts",
+                "hollywood movie shorts", "cinema moments shorts", "best movie scenes shorts", "sci fi movie shorts",
+                "comedy movie clips shorts", "animated movie shorts", "thriller movie shorts", "movie recap shorts"
+            )
+            ClipCategory.FOOD -> listOf(
+                "food shorts", "street food shorts", "easy recipes shorts", "cooking hacks shorts",
+                "chef cooking shorts", "dessert shorts", "crispy food asmr shorts", "quick dinner recipe shorts",
+                "pasta recipe shorts", "bbq grill shorts", "baking shorts", "food tasting shorts"
+            )
+            ClipCategory.SPORTS -> listOf(
+                "sports shorts", "sports highlights shorts", "basketball dunks shorts", "tennis rally shorts",
+                "athletics sprint shorts", "boxing highlights shorts", "ufc mma shorts", "cricket highlights shorts",
+                "nba highlights shorts", "formula 1 shorts", "olympic moments shorts", "extreme sports shorts"
+            )
+            ClipCategory.LIFESTYLE -> listOf(
+                "lifestyle shorts", "daily routine shorts", "morning routine shorts", "fitness lifestyle shorts",
+                "fashion style shorts", "home aesthetic shorts", "travel vlog shorts", "productivity tips shorts",
+                "room makeover shorts", "minimalist living shorts", "self care routine shorts", "luxury lifestyle shorts"
             )
             ClipCategory.GAMING -> listOf(
                 "gaming shorts", "epic gaming moments shorts", "minecraft shorts", "fortnite shorts",
@@ -747,8 +903,13 @@ class SupabaseClient(
         val postPayload = JSONObject().apply {
             put("query", effectiveQuery)
             put("q", effectiveQuery)
+            put("category", category.name.lowercase())
+            put("categories", JSONArray(listOf("football", "music", "movie", "food", "sports", "lifestyle")))
             put("maxResults", 25)
             put("videoDuration", "short")
+            put("videoDefinition", "high")
+            put("quality", "hd1080")
+            put("preferredQuality", "1080p")
             if (!pageToken.isNullOrBlank()) {
                 put("pageToken", pageToken)
             }
@@ -791,8 +952,11 @@ class SupabaseClient(
                 queryBuilder = {
                     addQueryParameter("q", effectiveQuery)
                     addQueryParameter("query", effectiveQuery)
+                    addQueryParameter("category", category.name.lowercase())
                     addQueryParameter("maxResults", "25")
                     addQueryParameter("videoDuration", "short")
+                    addQueryParameter("videoDefinition", "high")
+                    addQueryParameter("quality", "hd1080")
                     if (!pageToken.isNullOrBlank()) {
                         addQueryParameter("pageToken", pageToken)
                     }
@@ -802,8 +966,11 @@ class SupabaseClient(
             val getUrl = directSearchFunctionUrl.toHttpUrlOrNull()?.newBuilder()
                 ?.addQueryParameter("q", effectiveQuery)
                 ?.addQueryParameter("query", effectiveQuery)
+                ?.addQueryParameter("category", category.name.lowercase())
                 ?.addQueryParameter("maxResults", "25")
                 ?.addQueryParameter("videoDuration", "short")
+                ?.addQueryParameter("videoDefinition", "high")
+                ?.addQueryParameter("quality", "hd1080")
                 ?.apply {
                     if (!pageToken.isNullOrBlank()) {
                         addQueryParameter("pageToken", pageToken)
@@ -899,6 +1066,10 @@ class SupabaseClient(
                 ?: thumbnails?.optJSONObject("default")?.optString("url")?.takeIf { it.isNotBlank() }
                 ?: "https://i.ytimg.com/vi/$videoId/sddefault.jpg"
 
+            val streamUrl = obj.optString("streamUrl").takeIf { it.isNotBlank() }
+                ?: obj.optString("hdUrl").takeIf { it.isNotBlank() }
+                ?: obj.optString("videoUrl").takeIf { it.isNotBlank() }
+
             clips.add(
                 VideoClip(
                     id = "cc_$videoId",
@@ -911,7 +1082,9 @@ class SupabaseClient(
                     rewardCoins = ClipCatalog.VIDEO_REWARD_COINS,
                     thumbnailUrl = thumbUrl,
                     fallbackThumbResId = fallbackThumbs[i % fallbackThumbs.size],
-                    description = cleanDesc
+                    description = cleanDesc,
+                    videoUrl = streamUrl,
+                    qualityLabel = "1080p HD"
                 )
             )
         }
@@ -924,7 +1097,7 @@ class SupabaseClient(
         category: ClipCategory = ClipCategory.ALL,
         query: String = ""
     ): Result<List<VideoClip>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSafeCall("Unable to load videos. Check your connection.") {
             val session = sessionStore.getSession()
             val req = newGatewayRequestBuilder(
                 targetPath = "/rest/v1/videos",
@@ -940,10 +1113,10 @@ class SupabaseClient(
             httpClient.newCall(req).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    if (isMissingTableResponse(resp.code, body)) return@runCatching emptyList()
+                    if (isMissingTableResponse(resp.code, body)) return@runSafeCall emptyList()
                     throw IllegalStateException(parseSupabaseError(body, "Unable to load videos (${resp.code})"))
                 }
-                val arr = runCatching { JSONArray(body) }.getOrNull() ?: return@runCatching emptyList()
+                val arr = runCatching { JSONArray(body) }.getOrNull() ?: return@runSafeCall emptyList()
                 val fallbackThumbs = listOf(
                     R.drawable.thumb_clip_neon_pulse,
                     R.drawable.thumb_clip_pixel_arcade,
@@ -1670,7 +1843,8 @@ class SupabaseClient(
         session: SupabaseSession,
         block: (SupabaseSession) -> Pair<SupabaseDbSyncResult<T>?, Boolean>
     ): SupabaseDbSyncResult<T> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
+            requireOnlineOrThrow()
             val (firstResult, shouldRefresh) = block(session)
             if (!shouldRefresh && firstResult != null) return@withContext firstResult
             if (shouldRefresh) {
@@ -1680,9 +1854,84 @@ class SupabaseClient(
                 return@withContext retryResult ?: SupabaseDbSyncResult.Error("Unauthorized")
             }
             SupabaseDbSyncResult.Error("Unknown sync error")
-        }.getOrElse { err ->
-            SupabaseDbSyncResult.Error(err.localizedMessage ?: "Network unavailable")
+        } catch (err: Throwable) {
+            SupabaseDbSyncResult.Error(
+                sanitizeNetworkThrowable(err, "Network unavailable. Please check your connection.").message
+                    ?: "Network unavailable"
+            )
         }
+    }
+
+    private fun requireOnlineOrThrow() {
+        if (networkMonitor != null && !networkMonitor.isCurrentlyConnected()) {
+            throw OfflineException()
+        }
+    }
+
+    private inline fun <T> runSafeCall(
+        fallbackError: String = "Unable to connect to ClipCash right now.",
+        block: () -> T
+    ): Result<T> {
+        return try {
+            requireOnlineOrThrow()
+            Result.success(block())
+        } catch (t: Throwable) {
+            Result.failure(sanitizeNetworkThrowable(t, fallbackError))
+        }
+    }
+
+    private suspend fun <T> runSafeSuspendCall(
+        fallbackError: String = "Unable to connect to ClipCash right now.",
+        block: suspend () -> T
+    ): Result<T> {
+        return try {
+            requireOnlineOrThrow()
+            Result.success(block())
+        } catch (t: Throwable) {
+            Result.failure(sanitizeNetworkThrowable(t, fallbackError))
+        }
+    }
+
+    private fun sanitizeNetworkThrowable(throwable: Throwable, fallback: String): IllegalStateException {
+        if (throwable is OfflineException ||
+            isConnectivityException(throwable) ||
+            throwable is SocketTimeoutException ||
+            throwable is InterruptedIOException ||
+            throwable is TimeoutException ||
+            throwable is SSLException
+        ) {
+            return IllegalStateException(NetworkMonitor.OFFLINE_ERROR_MESSAGE)
+        }
+        val cleaned = sanitizeUserErrorMessage(throwable.message)
+        return IllegalStateException(cleaned.ifBlank { fallback })
+    }
+
+    private fun isConnectivityException(throwable: Throwable): Boolean {
+        var current: Throwable? = throwable
+        while (current != null) {
+            if (current is UnknownHostException ||
+                current is ConnectException ||
+                current is NoRouteToHostException ||
+                current is SocketException
+            ) {
+                return true
+            }
+            val msg = current.message.orEmpty()
+            if (msg.contains("unable to resolve host", ignoreCase = true) ||
+                msg.contains("no address associated", ignoreCase = true) ||
+                msg.contains("failed to connect", ignoreCase = true) ||
+                msg.contains("network is unreachable", ignoreCase = true) ||
+                msg.contains("eai_nodata", ignoreCase = true) ||
+                msg.contains("enetunreach", ignoreCase = true) ||
+                msg.contains("connection refused", ignoreCase = true) ||
+                msg.contains("software caused connection abort", ignoreCase = true) ||
+                msg.contains("broken pipe", ignoreCase = true)
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     private fun JSONObject.optCleanString(key: String): String {
@@ -1722,10 +1971,40 @@ class SupabaseClient(
                 ?: obj.optString("error").takeIf { it.isNotBlank() }
                 ?: fallback
         }.getOrDefault(fallback)
-        return raw
-            .replace(Regex("(?i)supabase"), "ClipCash")
-            .replace(Regex("(?i)postgrest?"), "ClipCash")
-            .trim()
+        return sanitizeUserErrorMessage(raw).ifBlank { fallback }
+    }
+
+    private class OfflineException : IllegalStateException(NetworkMonitor.OFFLINE_ERROR_MESSAGE)
+
+    companion object {
+        fun sanitizeUserErrorMessage(raw: String?): String {
+            val text = raw?.trim().orEmpty()
+            if (text.isEmpty()) return ""
+            if (text.contains("unable to resolve host", ignoreCase = true) ||
+                text.contains("no address associated", ignoreCase = true) ||
+                text.contains("failed to connect", ignoreCase = true) ||
+                text.contains("network is unreachable", ignoreCase = true) ||
+                text.contains("eai_nodata", ignoreCase = true) ||
+                text.contains("enetunreach", ignoreCase = true) ||
+                text.contains("timed out", ignoreCase = true) ||
+                text.contains("timeout", ignoreCase = true) ||
+                text.contains("connection reset", ignoreCase = true) ||
+                text.contains("connection refused", ignoreCase = true)
+            ) {
+                return NetworkMonitor.OFFLINE_ERROR_MESSAGE
+            }
+            return text
+                .replace(Regex("https?://[^\\s\"']+"), "ClipCash server")
+                .replace(Regex("(?i)[a-z0-9-]+\\.supabase\\.co"), "ClipCash server")
+                .replace(Regex("(?i)vidvozabnlngqhnxrhmf"), "ClipCash")
+                .replace(Regex("(?i)supabase"), "ClipCash")
+                .replace(Regex("(?i)postgrest?"), "ClipCash")
+                .replace(Regex("(?i)gotrue"), "ClipCash")
+                .replace(Regex("(?i)/(?:auth|rest|functions)/v1/[^\\s\"']*"), "ClipCash service")
+                .replace(Regex("(?i)central-point"), "ClipCash")
+                .replace(Regex("(?i)youtube-search"), "ClipCash")
+                .trim()
+        }
     }
 
     private fun unescapeHtml(input: String): String {

@@ -36,18 +36,23 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SentimentSatisfiedAlt
+import androidx.compose.material.icons.filled.Sports
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
@@ -486,7 +491,12 @@ private fun CategoryPillChip(
     val icon = when (category) {
         ClipCategory.ALL -> null
         ClipCategory.TRENDING -> Icons.Filled.LocalFireDepartment
+        ClipCategory.FOOTBALL -> Icons.Filled.SportsSoccer
         ClipCategory.MUSIC -> Icons.Filled.MusicNote
+        ClipCategory.MOVIES -> Icons.Filled.Movie
+        ClipCategory.FOOD -> Icons.Filled.Restaurant
+        ClipCategory.SPORTS -> Icons.Filled.Sports
+        ClipCategory.LIFESTYLE -> Icons.Filled.AutoAwesome
         ClipCategory.GAMING -> Icons.Filled.SportsEsports
         ClipCategory.COMEDY -> Icons.Filled.SentimentSatisfiedAlt
         ClipCategory.TECH -> Icons.Filled.Memory
@@ -916,6 +926,26 @@ private fun VideoClipCard(
                     color = Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Top-Right 1080p HD Badge
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(9.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xB8081024))
+                    .border(1.dp, CashEmerald.copy(alpha = 0.5f), CircleShape)
+                    .padding(horizontal = 7.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = clip.qualityLabel,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = CashEmerald
                 )
             }
 

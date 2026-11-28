@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
@@ -76,6 +77,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.NetworkMonitor
 import com.example.model.ClipCatalog
 import com.example.model.NationalityOption
 import androidx.compose.foundation.BorderStroke
@@ -100,7 +102,8 @@ fun AuthScreen(
     onVerifySignUpCode: (String) -> Unit,
     onResendSignUpCode: () -> Unit,
     onRequestPasswordReset: (String) -> Unit,
-    onVerifyAndResetPassword: (String, String, String) -> Unit,
+    onVerifyResetCode: (String) -> Unit,
+    onCompletePasswordReset: (String, String) -> Unit,
     onResendPasswordResetCode: () -> Unit,
     onClearMessages: () -> Unit
 ) {
@@ -154,7 +157,8 @@ fun AuthScreen(
                 AuthStage.VERIFY_SIGN_IN -> "Verify Your Sign In"
                 AuthStage.VERIFY_SIGN_UP -> "Verify Your Account"
                 AuthStage.FORGOT_PASSWORD -> "Reset Your Password"
-                AuthStage.VERIFY_RESET_PASSWORD -> "Confirm Password Reset"
+                AuthStage.VERIFY_RESET_PASSWORD -> "Verify Reset Code"
+                AuthStage.RESET_NEW_PASSWORD -> "Create New Password"
             }
 
             Text(
@@ -171,7 +175,16 @@ fun AuthScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(12.dp))
+
+            NetworkStatusPill(isOnline = authState.isOnline)
+
+            if (!authState.isOnline || authState.errorMessage == NetworkMonitor.OFFLINE_ERROR_MESSAGE) {
+                Spacer(Modifier.height(14.dp))
+                OfflineInlineNotice()
+            }
+
+            Spacer(Modifier.height(16.dp))
 
             Card(
                 shape = RoundedCornerShape(28.dp),
@@ -198,7 +211,8 @@ fun AuthScreen(
                             onVerify = onVerifySignInCode,
                             onResend = onResendSignInCode,
                             onBack = { onStageChange(AuthStage.SIGN_IN) },
-                            onClearMessages = onClearMessages
+                            onClearMessages = onClearMessages,
+                            isOnline = authState.isOnline
                         )
 
                         AuthStage.VERIFY_SIGN_UP -> VerificationCodeFormContent(
@@ -217,7 +231,8 @@ fun AuthScreen(
                             onVerify = onVerifySignUpCode,
                             onResend = onResendSignUpCode,
                             onBack = { onStageChange(AuthStage.SIGN_UP) },
-                            onClearMessages = onClearMessages
+                            onClearMessages = onClearMessages,
+                            isOnline = authState.isOnline
                         )
 
                         AuthStage.FORGOT_PASSWORD -> ForgotPasswordRequestFormContent(
@@ -230,16 +245,36 @@ fun AuthScreen(
                                 onRequestPasswordReset(entered)
                             },
                             onBackToSignIn = { onStageChange(AuthStage.SIGN_IN) },
-                            onClearMessages = onClearMessages
+                            onClearMessages = onClearMessages,
+                            isOnline = authState.isOnline
                         )
 
-                        AuthStage.VERIFY_RESET_PASSWORD -> ResetPasswordVerifyPageContent(
+                        AuthStage.VERIFY_RESET_PASSWORD -> VerificationCodeFormContent(
+                            icon = Icons.Filled.LockReset,
+                            title = "Verify Reset Code",
+                            subtitle = "Enter the verification code sent to your email before creating a new password.",
+                            targetEmail = authState.pendingEmail,
+                            buttonText = "Verify Code",
+                            codeTestTag = "verify_reset_code_input",
+                            submitTestTag = "verify_reset_submit_button",
+                            resendTestTag = "verify_reset_resend_button",
+                            backLabel = "Change Email",
+                            isLoading = authState.isLoading,
+                            errorMessage = authState.errorMessage,
+                            infoMessage = authState.infoMessage,
+                            onVerify = onVerifyResetCode,
+                            onResend = onResendPasswordResetCode,
+                            onBack = { onStageChange(AuthStage.FORGOT_PASSWORD) },
+                            onClearMessages = onClearMessages,
+                            isOnline = authState.isOnline
+                        )
+
+                        AuthStage.RESET_NEW_PASSWORD -> SetNewPasswordPageContent(
                             targetEmail = authState.pendingEmail,
                             isLoading = authState.isLoading,
                             errorMessage = authState.errorMessage,
                             infoMessage = authState.infoMessage,
-                            onVerifyAndReset = onVerifyAndResetPassword,
-                            onResendCode = onResendPasswordResetCode,
+                            onUpdatePassword = onCompletePasswordReset,
                             onBack = { onStageChange(AuthStage.FORGOT_PASSWORD) },
                             onClearMessages = onClearMessages
                         )
@@ -463,7 +498,9 @@ fun AuthScreen(
                     }
 
                     AuthStatusBanners(
-                        errorMessage = authState.errorMessage,
+                        errorMessage = authState.errorMessage?.takeUnless {
+                            it == NetworkMonitor.OFFLINE_ERROR_MESSAGE
+                        },
                         infoMessage = authState.infoMessage
                     )
 

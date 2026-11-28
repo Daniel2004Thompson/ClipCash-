@@ -4,6 +4,7 @@ import com.example.ads.AdManager
 import com.example.data.CoinRepository
 import com.example.data.CoinRewardStatus
 import com.example.model.ClipCatalog
+import com.example.model.ClipCategory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -97,5 +98,59 @@ class ExampleUnitTest {
         )
         assertEquals(2, syncedStatus.adsWatchedToday)
         assertEquals(190, syncedStatus.balance)
+    }
+
+    @Test
+    fun errorSanitizer_hidesBackendHostAndServiceNamesWhenOfflineOrFailing() {
+        val dnsError = "Unable to resolve host \"vidvozabnlngqhnxrhmf.supabase.co\": No address associated with hostname"
+        val sanitizedDns = com.example.data.SupabaseClient.sanitizeUserErrorMessage(dnsError)
+        assertEquals(com.example.data.NetworkMonitor.OFFLINE_ERROR_MESSAGE, sanitizedDns)
+        assertFalse(sanitizedDns.contains("supabase", ignoreCase = true))
+        assertFalse(sanitizedDns.contains("vidvozabnlngqhnxrhmf", ignoreCase = true))
+
+        val genericBackendError =
+            "Postgrest error at https://vidvozabnlngqhnxrhmf.supabase.co/rest/v1/users via gotrue"
+        val sanitizedGeneric = com.example.data.SupabaseClient.sanitizeUserErrorMessage(genericBackendError)
+        assertFalse(sanitizedGeneric.contains("supabase", ignoreCase = true))
+        assertFalse(sanitizedGeneric.contains("postgrest", ignoreCase = true))
+        assertFalse(sanitizedGeneric.contains("gotrue", ignoreCase = true))
+        assertFalse(sanitizedGeneric.contains("vidvozabnlngqhnxrhmf", ignoreCase = true))
+        assertFalse(sanitizedGeneric.contains("https://", ignoreCase = true))
+
+        assertTrue(com.example.viewmodel.AuthUiState().isOnline)
+        assertTrue(com.example.viewmodel.ChangeEmailUiState().isOnline)
+        assertTrue(com.example.viewmodel.ClipCashUiState().isOnline)
+    }
+
+    @Test
+    fun clipCatalog_includesRequestedCategoriesAnd1080pHdQuality() {
+        val labels = ClipCategory.entries.map { it.label }
+        assertTrue(labels.contains("Football"))
+        assertTrue(labels.contains("Music"))
+        assertTrue(labels.contains("Movies"))
+        assertTrue(labels.contains("Food"))
+        assertTrue(labels.contains("Sports"))
+        assertTrue(labels.contains("Lifestyle"))
+        assertTrue(ClipCatalog.fallbackClips.all { it.qualityLabel == "1080p HD" })
+    }
+
+    @Test
+    fun authAndChangeEmailStages_showVerificationCodeBeforeNewCredentials() {
+        val authStages = com.example.viewmodel.AuthStage.entries
+        assertTrue(
+            authStages.indexOf(com.example.viewmodel.AuthStage.VERIFY_RESET_PASSWORD) <
+                authStages.indexOf(com.example.viewmodel.AuthStage.RESET_NEW_PASSWORD)
+        )
+
+        val changeEmailStages = com.example.viewmodel.ChangeEmailStage.entries
+        assertEquals(com.example.viewmodel.ChangeEmailStage.VERIFY_CURRENT_EMAIL, changeEmailStages.first())
+        assertTrue(
+            changeEmailStages.indexOf(com.example.viewmodel.ChangeEmailStage.VERIFY_CURRENT_EMAIL) <
+                changeEmailStages.indexOf(com.example.viewmodel.ChangeEmailStage.ENTER_NEW_EMAIL)
+        )
+        assertEquals(
+            com.example.viewmodel.ChangeEmailStage.VERIFY_CURRENT_EMAIL,
+            com.example.viewmodel.ChangeEmailUiState().stage
+        )
     }
 }

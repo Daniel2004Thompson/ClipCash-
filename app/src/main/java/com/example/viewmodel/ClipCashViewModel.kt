@@ -12,7 +12,9 @@ import com.example.data.ClipProgressEntity
 import com.example.data.CoinRepository
 import com.example.data.CoinRewardStatus
 import com.example.data.DataStoreCoinRepository
+import com.example.data.EmailChangeRequestResult
 import com.example.data.EmailChangeVerifyResult
+import com.example.data.NetworkMonitor
 import com.example.data.SupabaseClient
 import com.example.data.SupabaseSession
 import com.example.data.SupabaseSessionStore
@@ -56,12 +58,14 @@ enum class AuthStage {
     VERIFY_SIGN_IN,
     VERIFY_SIGN_UP,
     FORGOT_PASSWORD,
-    VERIFY_RESET_PASSWORD
+    VERIFY_RESET_PASSWORD,
+    RESET_NEW_PASSWORD
 }
 
 enum class ChangeEmailStage {
+    VERIFY_CURRENT_EMAIL,
     ENTER_NEW_EMAIL,
-    VERIFY_CODE
+    VERIFY_NEW_EMAIL
 }
 
 data class AuthUiState(
@@ -71,16 +75,18 @@ data class AuthUiState(
     val signUpUsesOtpFallback: Boolean = false,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    val infoMessage: String? = null
+    val infoMessage: String? = null,
+    val isOnline: Boolean = true
 )
 
 data class ChangeEmailUiState(
-    val stage: ChangeEmailStage = ChangeEmailStage.ENTER_NEW_EMAIL,
+    val stage: ChangeEmailStage = ChangeEmailStage.VERIFY_CURRENT_EMAIL,
     val desiredNewEmail: String = "",
     val emailBeingVerified: String = "",
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    val infoMessage: String? = null
+    val infoMessage: String? = null,
+    val isOnline: Boolean = true
 )
 
 data class ClipCashUiState(
@@ -102,7 +108,8 @@ data class ClipCashUiState(
     val isCheckInAvailable: Boolean = true,
     val isFreeSpinAvailable: Boolean = true,
     val feedbackBanner: RewardFeedback? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isOnline: Boolean = true
 )
 
 private data class FeedSearchState(
@@ -118,7 +125,8 @@ private data class FeedSearchState(
 
 class ClipCashViewModel(
     private val repository: ClipCashRepository,
-    private val coinRepository: CoinRepository
+    private val coinRepository: CoinRepository,
+    private val networkMonitor: NetworkMonitor? = null
 ) : ViewModel() {
 
     private val authStage = MutableStateFlow(AuthStage.SIGN_IN)
@@ -128,6 +136,7 @@ class ClipCashViewModel(
     private val authError = MutableStateFlow<String?>(null)
     private val authInfo = MutableStateFlow<String?>(null)
     private val changeEmailState = MutableStateFlow(ChangeEmailUiState())
+    private val isOnlineFlow: StateFlow<Boolean> = networkMonitor?.isOnline ?: MutableStateFlow(true)
 
     private val feedState = MutableStateFlow(FeedSearchState())
     private val feedbackBanner = MutableStateFlow<RewardFeedback?>(null)
@@ -140,6 +149,31 @@ class ClipCashViewModel(
     private var startingSessionForClipId: String? = null
 
     init {
+        viewModelScope.launch {
+            var wasOnline = isOnlineFlow.value
+            isOnlineFlow.collect { online ->
+                changeEmailState.value = changeEmailState.value.copy(
+                    isOnline = online,
+                    errorMessage = if (online && changeEmailState.value.errorMessage == NetworkMonitor.OFFLINE_ERROR_MESSAGE) {
+                        null
+                    } else {
+                        changeEmailState.value.errorMessage
+                    }
+                )
+                if (online && !wasOnline) {
+                    if (authError.value == NetworkMonitor.OFFLINE_ERROR_MESSAGE) {
+                        authError.value = null
+                    }
+                    if (lastSyncedUserId != null) {
+                        refreshWalletSyncIfStale()
+                        if (feedState.value.clips == ClipCatalog.fallbackClips) {
+                            fetchClips(query = feedState.value.query, category = feedState.value.category)
+                        }
+                    }
+                }
+                wasOnline = online
+            }
+        }
         viewModelScope.launch {
             repository.authSessionFlow.collect { session ->
                 if (session != null) {
@@ -195,8 +229,9 @@ class ClipCashViewModel(
         },
         combine(authLoading, authError, authInfo) { loading, err, info ->
             Triple(loading, err, info)
-        }
-    ) { session, flowMeta, status ->
+        },
+        isOnlineFlow
+    ) { session, flowMeta, status, online ->
         val (stage, pendingEmail, fallback) = flowMeta
         val (loading, err, info) = status
         AuthUiState(
@@ -205,8 +240,9 @@ class ClipCashViewModel(
             pendingEmail = pendingEmail,
             signUpUsesOtpFallback = fallback,
             isLoading = loading,
-            errorMessage = err,
-            infoMessage = info
+            errorMessage = err?.let { SupabaseClient.sanitizeUserErrorMessage(it) },
+            infoMessage = info,
+            isOnline = online
         )
     }
 
@@ -237,9 +273,10 @@ class ClipCashViewModel(
         repository.syncNoticeFlow,
         feedbackBanner,
         errorMessage,
-        coinRepository.status
-    ) { sync, banner, err, coinStatus ->
-        listOf<Any?>(sync, banner, err, coinStatus)
+        coinRepository.status,
+        isOnlineFlow
+    ) { sync, banner, err, coinStatus, online ->
+        listOf<Any?>(sync, banner, err, coinStatus, online)
     }
 
     val uiState: StateFlow<ClipCashUiState> = combine(
@@ -251,10 +288,11 @@ class ClipCashViewModel(
     ) { auth, emailChange, bundle, feed, meta ->
         val (wallet, progressMap, txsAndQuests) = bundle
         val (txs, questsUi) = txsAndQuests
-        val syncNotice = meta[0] as String?
+        val syncNotice = (meta[0] as String?)?.let { SupabaseClient.sanitizeUserErrorMessage(it) }
         val banner = meta[1] as RewardFeedback?
-        val err = meta[2] as String?
+        val err = (meta[2] as String?)?.let { SupabaseClient.sanitizeUserErrorMessage(it) }
         val coinStatus = meta[3] as CoinRewardStatus
+        val online = meta[4] as Boolean
         val today = repository.todayDateKey()
         val videoTxsByTitle = txs
             .filter { it.type == TransactionType.VIDEO.name }
@@ -286,7 +324,7 @@ class ClipCashViewModel(
         }
         ClipCashUiState(
             auth = auth,
-            changeEmail = emailChange,
+            changeEmail = emailChange.copy(isOnline = online),
             wallet = wallet,
             coinStatus = coinStatus,
             selectedCategory = feed.category,
@@ -294,7 +332,7 @@ class ClipCashViewModel(
             clips = feed.clips,
             isSearchingClips = feed.isLoading,
             isLoadingMoreClips = feed.isLoadingMore,
-            searchError = feed.error,
+            searchError = feed.error?.let { SupabaseClient.sanitizeUserErrorMessage(it) },
             dbSyncNotice = syncNotice,
             clipProgress = mergedProgress,
             quests = questsUi,
@@ -303,7 +341,8 @@ class ClipCashViewModel(
             isCheckInAvailable = wallet.lastCheckInDate != today,
             isFreeSpinAvailable = wallet.lastFreeSpinDate != today,
             feedbackBanner = banner,
-            errorMessage = err
+            errorMessage = err,
+            isOnline = online
         )
     }.stateIn(
         scope = viewModelScope,
@@ -311,10 +350,35 @@ class ClipCashViewModel(
         initialValue = ClipCashUiState()
     )
 
+    private var pendingResetRecoveryToken: String? = null
+
     fun setAuthStage(stage: AuthStage) {
+        if (stage != AuthStage.RESET_NEW_PASSWORD) {
+            pendingResetRecoveryToken = null
+        }
         authStage.value = stage
         authError.value = null
         authInfo.value = null
+    }
+
+    private fun requireOnlineForAuth(): Boolean {
+        val online = networkMonitor?.isCurrentlyConnected() ?: true
+        if (!online) {
+            authInfo.value = null
+            authError.value = NetworkMonitor.OFFLINE_ERROR_MESSAGE
+        }
+        return online
+    }
+
+    private fun requireOnlineForChangeEmail(): Boolean {
+        val online = networkMonitor?.isCurrentlyConnected() ?: true
+        if (!online) {
+            changeEmailState.value = changeEmailState.value.copy(
+                errorMessage = NetworkMonitor.OFFLINE_ERROR_MESSAGE,
+                infoMessage = null
+            )
+        }
+        return online
     }
 
     fun signIn(email: String, password: String) {
@@ -323,6 +387,7 @@ class ClipCashViewModel(
             authError.value = "Enter a valid email and at least 6 characters."
             return
         }
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
@@ -343,7 +408,10 @@ class ClipCashViewModel(
                         }
                     }
                 }
-                .onFailure { authError.value = it.message ?: "Sign in failed" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Sign in failed. Please try again." }
+                }
             authLoading.value = false
         }
     }
@@ -355,6 +423,7 @@ class ClipCashViewModel(
             authError.value = "Enter the verification code sent to your email."
             return
         }
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
@@ -364,7 +433,10 @@ class ClipCashViewModel(
                     authStage.value = AuthStage.SIGN_IN
                     authPendingEmail.value = ""
                 }
-                .onFailure { authError.value = it.message ?: "Invalid verification code" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Invalid verification code." }
+                }
             authLoading.value = false
         }
     }
@@ -372,13 +444,17 @@ class ClipCashViewModel(
     fun resendSignInCode() {
         val targetEmail = authPendingEmail.value
         if (targetEmail.isBlank()) return
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
             authInfo.value = null
             repository.resendSignInCode(targetEmail)
                 .onSuccess { authInfo.value = "A fresh verification code was sent to $targetEmail." }
-                .onFailure { authError.value = it.message ?: "Unable to resend code" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Unable to resend code." }
+                }
             authLoading.value = false
         }
     }
@@ -430,6 +506,8 @@ class ClipCashViewModel(
             }
         }
 
+        if (!requireOnlineForAuth()) return
+
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
@@ -451,7 +529,10 @@ class ClipCashViewModel(
                         authInfo.value = res.message
                     }
                 }
-                .onFailure { authError.value = it.message ?: "Sign up failed" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Sign up failed. Please try again." }
+                }
             authLoading.value = false
         }
     }
@@ -463,6 +544,7 @@ class ClipCashViewModel(
             authError.value = "Enter the verification code sent to your email."
             return
         }
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
@@ -473,7 +555,10 @@ class ClipCashViewModel(
                     authPendingEmail.value = ""
                     authSignUpOtpFallback.value = false
                 }
-                .onFailure { authError.value = it.message ?: "Invalid verification code" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Invalid verification code." }
+                }
             authLoading.value = false
         }
     }
@@ -481,13 +566,17 @@ class ClipCashViewModel(
     fun resendSignUpCode() {
         val targetEmail = authPendingEmail.value
         if (targetEmail.isBlank()) return
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
             authInfo.value = null
             repository.resendSignUpCode(targetEmail, authSignUpOtpFallback.value)
                 .onSuccess { authInfo.value = "Verification code resent to $targetEmail." }
-                .onFailure { authError.value = it.message ?: "Unable to resend code" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Unable to resend code." }
+                }
             authLoading.value = false
         }
     }
@@ -498,6 +587,7 @@ class ClipCashViewModel(
             authError.value = "Enter a valid email address."
             return
         }
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
@@ -508,19 +598,48 @@ class ClipCashViewModel(
                     authStage.value = AuthStage.VERIFY_RESET_PASSWORD
                     authInfo.value = "Password reset verification code sent to $cleanEmail."
                 }
-                .onFailure { authError.value = it.message ?: "Unable to send reset code" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Unable to send reset code." }
+                }
             authLoading.value = false
         }
     }
 
-    fun verifyAndResetPassword(code: String, newPassword: String, confirmPassword: String) {
+    fun verifyPasswordResetCode(code: String) {
         val cleanCode = code.trim()
         val targetEmail = authPendingEmail.value
+        if (cleanCode.length < 6) {
+            authError.value = "Enter the verification code sent to $targetEmail."
+            return
+        }
+        if (!requireOnlineForAuth()) return
+        viewModelScope.launch {
+            authLoading.value = true
+            authError.value = null
+            authInfo.value = null
+            repository.verifyPasswordResetCode(targetEmail, cleanCode)
+                .onSuccess { recoveryToken ->
+                    pendingResetRecoveryToken = recoveryToken
+                    authStage.value = AuthStage.RESET_NEW_PASSWORD
+                    authInfo.value = "Verification code confirmed! Enter your new password below."
+                }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Invalid or expired verification code." }
+                }
+            authLoading.value = false
+        }
+    }
+
+    fun completePasswordReset(newPassword: String, confirmPassword: String) {
+        val recoveryToken = pendingResetRecoveryToken
+        if (recoveryToken.isNullOrBlank()) {
+            authStage.value = AuthStage.VERIFY_RESET_PASSWORD
+            authError.value = "Please verify your reset code first."
+            return
+        }
         when {
-            cleanCode.length < 6 -> {
-                authError.value = "Enter the verification code sent to $targetEmail."
-                return
-            }
             newPassword.length < 6 -> {
                 authError.value = "New password must be at least 6 characters."
                 return
@@ -530,17 +649,22 @@ class ClipCashViewModel(
                 return
             }
         }
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
             authInfo.value = null
-            repository.verifyAndResetPassword(targetEmail, cleanCode, newPassword)
+            repository.updatePasswordWithRecoveryToken(recoveryToken, newPassword)
                 .onSuccess {
+                    pendingResetRecoveryToken = null
                     authStage.value = AuthStage.SIGN_IN
                     authPendingEmail.value = ""
                     authInfo.value = "Password updated! Sign in with your new password."
                 }
-                .onFailure { authError.value = it.message ?: "Password reset failed" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Password reset failed." }
+                }
             authLoading.value = false
         }
     }
@@ -548,19 +672,115 @@ class ClipCashViewModel(
     fun resendPasswordResetCode() {
         val targetEmail = authPendingEmail.value
         if (targetEmail.isBlank()) return
+        if (!requireOnlineForAuth()) return
         viewModelScope.launch {
             authLoading.value = true
             authError.value = null
             authInfo.value = null
             repository.requestPasswordReset(targetEmail)
                 .onSuccess { authInfo.value = "Password reset code resent to $targetEmail." }
-                .onFailure { authError.value = it.message ?: "Unable to resend reset code" }
+                .onFailure {
+                    authError.value = SupabaseClient.sanitizeUserErrorMessage(it.message)
+                        .ifBlank { "Unable to resend reset code." }
+                }
             authLoading.value = false
         }
     }
 
     fun resetChangeEmailFlow() {
-        changeEmailState.value = ChangeEmailUiState()
+        changeEmailState.value = ChangeEmailUiState(isOnline = isOnlineFlow.value)
+    }
+
+    fun startChangeEmailFlow(currentEmail: String) {
+        val cleanCurrent = currentEmail.trim()
+        changeEmailState.value = ChangeEmailUiState(
+            stage = ChangeEmailStage.VERIFY_CURRENT_EMAIL,
+            emailBeingVerified = cleanCurrent,
+            isLoading = false,
+            isOnline = isOnlineFlow.value
+        )
+        if (cleanCurrent.isBlank()) {
+            changeEmailState.value = changeEmailState.value.copy(
+                errorMessage = "Current email address not found. Please sign in again."
+            )
+            return
+        }
+        sendCurrentEmailVerificationOtp(cleanCurrent, isResend = false)
+    }
+
+    fun resendCurrentEmailChangeCode(currentEmail: String) {
+        val target = changeEmailState.value.emailBeingVerified.ifBlank { currentEmail.trim() }
+        if (target.isBlank()) return
+        sendCurrentEmailVerificationOtp(target, isResend = true)
+    }
+
+    private fun sendCurrentEmailVerificationOtp(targetEmail: String, isResend: Boolean) {
+        if (!requireOnlineForChangeEmail()) return
+        viewModelScope.launch {
+            changeEmailState.value = changeEmailState.value.copy(
+                isLoading = true,
+                errorMessage = null,
+                infoMessage = null
+            )
+            repository.requestCurrentEmailVerificationOtp(targetEmail)
+                .onSuccess {
+                    changeEmailState.value = changeEmailState.value.copy(
+                        stage = ChangeEmailStage.VERIFY_CURRENT_EMAIL,
+                        emailBeingVerified = targetEmail,
+                        isLoading = false,
+                        infoMessage = if (isResend) {
+                            "Verification code resent to $targetEmail."
+                        } else {
+                            "Verification code sent to $targetEmail."
+                        }
+                    )
+                }
+                .onFailure { err ->
+                    changeEmailState.value = changeEmailState.value.copy(
+                        isLoading = false,
+                        errorMessage = SupabaseClient.sanitizeUserErrorMessage(err.message)
+                            .ifBlank { "Unable to send verification code." }
+                    )
+                }
+        }
+    }
+
+    fun verifyCurrentEmailForChange(code: String) {
+        val cleanCode = code.trim()
+        val current = changeEmailState.value
+        val targetEmail = current.emailBeingVerified
+        if (cleanCode.length < 6) {
+            changeEmailState.value = current.copy(
+                errorMessage = "Enter the verification code sent to $targetEmail.",
+                infoMessage = null
+            )
+            return
+        }
+        if (!requireOnlineForChangeEmail()) return
+        viewModelScope.launch {
+            changeEmailState.value = current.copy(
+                isLoading = true,
+                errorMessage = null,
+                infoMessage = null
+            )
+            repository.verifyCurrentEmailForChange(targetEmail, cleanCode)
+                .onSuccess {
+                    changeEmailState.value = ChangeEmailUiState(
+                        stage = ChangeEmailStage.ENTER_NEW_EMAIL,
+                        emailBeingVerified = targetEmail,
+                        isLoading = false,
+                        infoMessage = "Current email verified! Enter your new email address below.",
+                        isOnline = isOnlineFlow.value
+                    )
+                }
+                .onFailure { err ->
+                    changeEmailState.value = changeEmailState.value.copy(
+                        isLoading = false,
+                        errorMessage = SupabaseClient.sanitizeUserErrorMessage(err.message)
+                            .ifBlank { "Invalid or expired verification code." }
+                    )
+                }
+        }
     }
 
     fun clearChangeEmailMessages() {
@@ -578,7 +798,7 @@ class ClipCashViewModel(
         )
     }
 
-    fun requestEmailChange(newEmail: String, currentEmail: String) {
+    fun requestEmailChange(newEmail: String, currentEmail: String, onCompleted: (String) -> Unit = {}) {
         val cleanNew = newEmail.trim()
         when {
             cleanNew.isBlank() || !cleanNew.contains("@") -> {
@@ -596,6 +816,7 @@ class ClipCashViewModel(
                 return
             }
         }
+        if (!requireOnlineForChangeEmail()) return
         viewModelScope.launch {
             changeEmailState.value = changeEmailState.value.copy(
                 isLoading = true,
@@ -603,19 +824,34 @@ class ClipCashViewModel(
                 infoMessage = null
             )
             repository.requestEmailChange(cleanNew)
-                .onSuccess {
-                    changeEmailState.value = ChangeEmailUiState(
-                        stage = ChangeEmailStage.VERIFY_CODE,
-                        desiredNewEmail = cleanNew,
-                        emailBeingVerified = cleanNew,
-                        isLoading = false,
-                        infoMessage = "Verification code sent to $cleanNew."
-                    )
+                .onSuccess { outcome ->
+                    when (outcome) {
+                        is EmailChangeRequestResult.CompletedImmediately -> {
+                            changeEmailState.value = ChangeEmailUiState(isOnline = isOnlineFlow.value)
+                            feedbackBanner.value = RewardFeedback(
+                                title = "Email Address Updated!",
+                                subtitle = "Your ClipCash wallet is now linked to ${outcome.newEmail}",
+                                coinsDelta = 0
+                            )
+                            onCompleted(outcome.newEmail)
+                        }
+                        is EmailChangeRequestResult.VerificationRequired -> {
+                            changeEmailState.value = ChangeEmailUiState(
+                                stage = ChangeEmailStage.VERIFY_NEW_EMAIL,
+                                desiredNewEmail = cleanNew,
+                                emailBeingVerified = outcome.emailToVerify,
+                                isLoading = false,
+                                infoMessage = outcome.message,
+                                isOnline = isOnlineFlow.value
+                            )
+                        }
+                    }
                 }
                 .onFailure { err ->
                     changeEmailState.value = changeEmailState.value.copy(
                         isLoading = false,
-                        errorMessage = err.message ?: "Unable to send email verification code"
+                        errorMessage = SupabaseClient.sanitizeUserErrorMessage(err.message)
+                            .ifBlank { "Unable to update email address." }
                     )
                 }
         }
@@ -631,6 +867,7 @@ class ClipCashViewModel(
             )
             return
         }
+        if (!requireOnlineForChangeEmail()) return
         viewModelScope.launch {
             changeEmailState.value = current.copy(
                 isLoading = true,
@@ -645,7 +882,7 @@ class ClipCashViewModel(
                 .onSuccess { outcome ->
                     when (outcome) {
                         is EmailChangeVerifyResult.Completed -> {
-                            changeEmailState.value = ChangeEmailUiState()
+                            changeEmailState.value = ChangeEmailUiState(isOnline = isOnlineFlow.value)
                             feedbackBanner.value = RewardFeedback(
                                 title = "Email Address Updated!",
                                 subtitle = "Your ClipCash wallet is now linked to ${outcome.newEmail}",
@@ -666,7 +903,8 @@ class ClipCashViewModel(
                 .onFailure { err ->
                     changeEmailState.value = changeEmailState.value.copy(
                         isLoading = false,
-                        errorMessage = err.message ?: "Invalid or expired verification code"
+                        errorMessage = SupabaseClient.sanitizeUserErrorMessage(err.message)
+                            .ifBlank { "Invalid or expired verification code." }
                     )
                 }
         }
@@ -675,6 +913,7 @@ class ClipCashViewModel(
     fun resendEmailChangeCode() {
         val desired = changeEmailState.value.desiredNewEmail
         if (desired.isBlank()) return
+        if (!requireOnlineForChangeEmail()) return
         viewModelScope.launch {
             changeEmailState.value = changeEmailState.value.copy(
                 isLoading = true,
@@ -682,16 +921,22 @@ class ClipCashViewModel(
                 infoMessage = null
             )
             repository.requestEmailChange(desired)
-                .onSuccess {
+                .onSuccess { outcome ->
+                    val target = if (outcome is EmailChangeRequestResult.VerificationRequired) {
+                        outcome.emailToVerify
+                    } else {
+                        desired
+                    }
                     changeEmailState.value = changeEmailState.value.copy(
                         isLoading = false,
-                        infoMessage = "Verification code resent to $desired."
+                        infoMessage = "Verification code resent to $target."
                     )
                 }
                 .onFailure { err ->
                     changeEmailState.value = changeEmailState.value.copy(
                         isLoading = false,
-                        errorMessage = err.message ?: "Unable to resend verification code"
+                        errorMessage = SupabaseClient.sanitizeUserErrorMessage(err.message)
+                            .ifBlank { "Unable to resend verification code." }
                     )
                 }
         }
@@ -704,6 +949,7 @@ class ClipCashViewModel(
             lastSyncAtMs = 0L
             authStage.value = AuthStage.SIGN_IN
             authPendingEmail.value = ""
+            pendingResetRecoveryToken = null
             authSignUpOtpFallback.value = false
             changeEmailState.value = ChangeEmailUiState()
             feedState.value = FeedSearchState()
@@ -992,13 +1238,16 @@ class ClipCashViewModel(
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                val clipCashApp = app as? ClipCashApp
                 val db = ClipCashDatabase.getInstance(app)
                 val sessionStore = SupabaseSessionStore(app)
-                val supabaseClient = SupabaseClient(sessionStore)
-                val coinRepository = (app as? ClipCashApp)?.coinRepository ?: DataStoreCoinRepository(app)
+                val networkMonitor = clipCashApp?.networkMonitor ?: NetworkMonitor(app)
+                val supabaseClient = SupabaseClient(sessionStore, networkMonitor)
+                val coinRepository = clipCashApp?.coinRepository ?: DataStoreCoinRepository(app)
                 ClipCashViewModel(
                     repository = ClipCashRepository(db, supabaseClient, sessionStore, coinRepository),
-                    coinRepository = coinRepository
+                    coinRepository = coinRepository,
+                    networkMonitor = networkMonitor
                 )
             }
         }

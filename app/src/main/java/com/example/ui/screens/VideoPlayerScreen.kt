@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -368,6 +369,10 @@ fun VideoPlayerScreen(
                                 override fun onReady(youTubePlayer: YouTubePlayer) {
                                     activeNativePlayer = youTubePlayer
                                     if (isMuted) youTubePlayer.mute() else youTubePlayer.unMute()
+                                    findChildWebView(this@apply)?.let { wv ->
+                                        wv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                                        applyHd1080QualityToWebView(wv)
+                                    }
                                     youTubePlayer.loadVideo(clipSnapshot.videoId, 0f)
                                 }
 
@@ -376,10 +381,14 @@ fun VideoPlayerScreen(
                                     state: PlayerConstants.PlayerState
                                 ) {
                                     when (state) {
-                                        PlayerConstants.PlayerState.PLAYING -> playingCb()
+                                        PlayerConstants.PlayerState.PLAYING -> {
+                                            findChildWebView(this@apply)?.let { applyHd1080QualityToWebView(it) }
+                                            playingCb()
+                                        }
                                         PlayerConstants.PlayerState.PAUSED -> pausedCb()
                                         PlayerConstants.PlayerState.BUFFERING -> bufferingCb()
                                         PlayerConstants.PlayerState.VIDEO_CUED -> {
+                                            findChildWebView(this@apply)?.let { applyHd1080QualityToWebView(it) }
                                             youTubePlayer.play()
                                         }
                                         PlayerConstants.PlayerState.ENDED -> {
@@ -615,6 +624,7 @@ private class ClipShortsWebController(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(AndroidColor.BLACK)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
 
@@ -715,9 +725,10 @@ private class ClipShortsWebController(
         if (isDestroyed) return
         activeVideoId = videoId
         seedVideoCookies(webView)
+        applyHd1080QualityToWebView(webView)
         engineMode = PlayerEngineMode.MOBILE_WEB
         webView.loadUrl(
-            "https://m.youtube.com/shorts/$videoId",
+            "https://m.youtube.com/shorts/$videoId?vq=hd1080&hd=1",
             mapOf("Referer" to "https://m.youtube.com/")
         )
     }
@@ -942,8 +953,31 @@ private class ClipShortsWebController(
                     window.ClipCashBridge.onPlayerVideoState($escapedId, isPlaying, isPaused, isMuted);
                 }
 
+                function enforceHd1080() {
+                    try {
+                        var qObj = JSON.stringify({
+                            data: '1080',
+                            expiration: Date.now() + 2592000000,
+                            creation: Date.now()
+                        });
+                        localStorage.setItem('yt-player-quality', qObj);
+                        localStorage.setItem('yt-player-manual-quality-selection', qObj);
+                    } catch (e) {}
+                    var mp = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+                    if (mp) {
+                        try {
+                            var levels = mp.getAvailableQualityLevels ? mp.getAvailableQualityLevels() : [];
+                            var target = (levels && levels.indexOf('hd1080') !== -1) ? 'hd1080'
+                                : (levels && levels.indexOf('hd720') !== -1) ? 'hd720' : 'hd1080';
+                            if (mp.setPlaybackQualityRange) mp.setPlaybackQualityRange(target, target);
+                            if (mp.setPlaybackQuality) mp.setPlaybackQuality(target);
+                        } catch (e) {}
+                    }
+                }
+
                 window.__ccTryAutoplay = function(allowMuteFallback) {
                     if (window.__ccUserPaused) return;
+                    enforceHd1080();
                     var playBtn = document.querySelector('.ytp-large-play-button, button[aria-label*="Play"]');
                     if (playBtn && playBtn.offsetParent !== null) {
                         try { playBtn.click(); } catch (e) {}
@@ -1000,7 +1034,9 @@ private class ClipShortsWebController(
                         if (!v.__ccBound) {
                             v.__ccBound = true;
                             v.loop = false;
-                            v.addEventListener('playing', function() { reportState(v); });
+                            enforceHd1080();
+                            v.addEventListener('loadedmetadata', enforceHd1080);
+                            v.addEventListener('playing', function() { enforceHd1080(); reportState(v); });
                             v.addEventListener('pause', function() { reportState(v); });
                             v.addEventListener('ended', function() {
                                 window.ClipCashBridge && window.ClipCashBridge.onVideoEnded($escapedId);
@@ -1279,7 +1315,7 @@ private fun ShortOverlayPage(
                 horizontalAlignment = Alignment.End
             ) {
                 Text(
-                    text = "Short #${pageIndex + 1}",
+                    text = "Short #${pageIndex + 1} · ${clip.qualityLabel}",
                     style = MaterialTheme.typography.labelLarge,
                     color = Color.White
                 )
@@ -1446,5 +1482,44 @@ private fun ShortsRailButton(
             style = MaterialTheme.typography.labelSmall,
             color = if (enabled) Color.White else Color.White.copy(alpha = 0.4f)
         )
+    }
+}
+
+private fun findChildWebView(view: View): WebView? {
+    if (view is WebView) return view
+    if (view is ViewGroup) {
+        for (i in 0 until view.childCount) {
+            findChildWebView(view.getChildAt(i))?.let { return it }
+        }
+    }
+    return null
+}
+
+private fun applyHd1080QualityToWebView(webView: WebView) {
+    val script = """
+        (function() {
+            try {
+                var qObj = JSON.stringify({
+                    data: '1080',
+                    expiration: Date.now() + 2592000000,
+                    creation: Date.now()
+                });
+                localStorage.setItem('yt-player-quality', qObj);
+                localStorage.setItem('yt-player-manual-quality-selection', qObj);
+            } catch (e) {}
+            function setHd(p) {
+                if (!p) return;
+                try {
+                    if (p.setPlaybackQualityRange) p.setPlaybackQualityRange('hd1080', 'hd1080');
+                    if (p.setPlaybackQuality) p.setPlaybackQuality('hd1080');
+                } catch (e) {}
+            }
+            setHd(window.player);
+            setHd(document.getElementById('movie_player'));
+            setHd(document.querySelector('.html5-video-player'));
+        })();
+    """.trimIndent()
+    webView.post {
+        runCatching { webView.evaluateJavascript(script, null) }
     }
 }

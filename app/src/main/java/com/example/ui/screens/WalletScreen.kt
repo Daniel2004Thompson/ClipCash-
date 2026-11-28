@@ -146,10 +146,17 @@ fun WalletScreen(
                                         if (session.email.isNotBlank() && session.email != displayTitle) add(session.email)
                                     }
                                 }.joinToString(" · ")
-                                val syncLabel = uiState.dbSyncNotice
-                                    ?: session?.email?.takeIf { it.isNotBlank() }?.let { "Wallet synced for $it" }
-                                    ?: "Synced with ClipCash Cloud"
-                                val syncColor = if (uiState.dbSyncNotice != null) CoralRed else CashEmerald
+                                val syncLabel = when {
+                                    !uiState.isOnline -> "Network connection is bad — check internet to sync"
+                                    uiState.dbSyncNotice != null -> uiState.dbSyncNotice
+                                    !session?.email.isNullOrBlank() -> "Wallet synced for ${session?.email}"
+                                    else -> "Synced with ClipCash Cloud"
+                                }
+                                val syncColor = if (!uiState.isOnline || uiState.dbSyncNotice != null) {
+                                    CoralRed
+                                } else {
+                                    CashEmerald
+                                }
                                 if (accountDetails.isNotBlank()) {
                                     Text(
                                         text = accountDetails,

@@ -7,7 +7,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,6 +30,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.SportsEsports
@@ -43,6 +47,7 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -210,7 +215,8 @@ fun ClipCashRoot(
                     onVerifySignUpCode = viewModel::verifySignUpCode,
                     onResendSignUpCode = viewModel::resendSignUpCode,
                     onRequestPasswordReset = viewModel::requestPasswordReset,
-                    onVerifyAndResetPassword = viewModel::verifyAndResetPassword,
+                    onVerifyResetCode = viewModel::verifyPasswordResetCode,
+                    onCompletePasswordReset = viewModel::completePasswordReset,
                     onResendPasswordResetCode = viewModel::resendPasswordResetCode,
                     onClearMessages = viewModel::clearAuthMessages
                 )
@@ -316,6 +322,37 @@ fun ClipCashRoot(
                             }
 
                             Column(modifier = Modifier.weight(1f)) {
+                                AnimatedVisibility(visible = !uiState.isOnline) {
+                                    Surface(
+                                        color = Color(0xFF7D241C),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("offline_connection_banner")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 9.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.WifiOff,
+                                                contentDescription = "No internet connection",
+                                                tint = Color(0xFFFCA5A5),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "Network connection is bad. Please check your internet connection and try again.",
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontWeight = FontWeight.Medium
+                                                ),
+                                                color = Color(0xFFFEE2E2)
+                                            )
+                                        }
+                                    }
+                                }
+
                                 Box(
                                     modifier = Modifier.weight(1f),
                                     contentAlignment = Alignment.TopCenter
@@ -401,7 +438,7 @@ fun ClipCashRoot(
                                                 onRedeemReward = viewModel::redeemReward,
                                                 onSyncWallet = viewModel::refreshWalletSync,
                                                 onChangeEmail = {
-                                                    viewModel.resetChangeEmailFlow()
+                                                    viewModel.startChangeEmailFlow(uiState.auth.session?.email.orEmpty())
                                                     navController.navigate(ROUTE_CHANGE_EMAIL)
                                                 },
                                                 onSignOut = viewModel::signOut
@@ -465,15 +502,21 @@ fun ClipCashRoot(
             ChangeEmailScreen(
                 currentEmail = currentEmail,
                 state = uiState.changeEmail,
-                onSendCode = { newEmail ->
-                    viewModel.requestEmailChange(newEmail, currentEmail)
+                onVerifyCurrentEmailCode = viewModel::verifyCurrentEmailForChange,
+                onResendCurrentEmailCode = {
+                    viewModel.resendCurrentEmailChangeCode(currentEmail)
                 },
-                onVerifyCode = { code ->
+                onSendNewEmail = { newEmail ->
+                    viewModel.requestEmailChange(newEmail, currentEmail) {
+                        navController.popBackStack()
+                    }
+                },
+                onVerifyNewEmailCode = { code ->
                     viewModel.verifyEmailChange(code) {
                         navController.popBackStack()
                     }
                 },
-                onResendCode = viewModel::resendEmailChangeCode,
+                onResendNewEmailCode = viewModel::resendEmailChangeCode,
                 onBackToEnterEmail = viewModel::backToEnterNewEmail,
                 onClearMessages = viewModel::clearChangeEmailMessages,
                 onNavigateBack = {

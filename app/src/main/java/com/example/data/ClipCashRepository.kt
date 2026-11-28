@@ -110,6 +110,17 @@ class ClipCashRepository(
         return supabaseClient.requestPasswordReset(email)
     }
 
+    suspend fun verifyPasswordResetCode(email: String, code: String): Result<String> {
+        return supabaseClient.verifyPasswordResetCode(email, code)
+    }
+
+    suspend fun updatePasswordWithRecoveryToken(
+        recoveryAccessToken: String,
+        newPassword: String
+    ): Result<Unit> {
+        return supabaseClient.updatePasswordWithRecoveryToken(recoveryAccessToken, newPassword)
+    }
+
     suspend fun verifyAndResetPassword(
         email: String,
         code: String,
@@ -118,8 +129,21 @@ class ClipCashRepository(
         return supabaseClient.verifyAndResetPassword(email, code, newPassword)
     }
 
-    suspend fun requestEmailChange(newEmail: String): Result<Unit> {
-        return supabaseClient.requestEmailChange(newEmail)
+    suspend fun requestCurrentEmailVerificationOtp(email: String): Result<Unit> {
+        return supabaseClient.requestCurrentEmailVerificationOtp(email)
+    }
+
+    suspend fun verifyCurrentEmailForChange(email: String, code: String): Result<SupabaseSession> {
+        return supabaseClient.verifyCurrentEmailForChange(email, code)
+    }
+
+    suspend fun requestEmailChange(newEmail: String): Result<EmailChangeRequestResult> {
+        val result = supabaseClient.requestEmailChange(newEmail)
+        val outcome = result.getOrNull()
+        if (outcome is EmailChangeRequestResult.CompletedImmediately) {
+            finalizeEmailUpdate(outcome.updatedSession, outcome.newEmail)
+        }
+        return result
     }
 
     suspend fun verifyEmailChange(
@@ -131,50 +155,54 @@ class ClipCashRepository(
         if (result.isSuccess) {
             val outcome = result.getOrNull()
             if (outcome is EmailChangeVerifyResult.Completed) {
-                syncMutex.withLock {
-                    sessionStore.saveSession(outcome.updatedSession)
-                    val currentWallet = dao.getWalletState()
-                    if (currentWallet != null) {
-                        val updatedWallet = currentWallet.copy(
-                            userId = outcome.updatedSession.userId,
-                            userEmail = outcome.newEmail
-                        )
-                        dao.upsertWalletState(updatedWallet)
-                        val claimed = dao.getClaimedQuestIdsSync().toSet()
-                        val txs = dao.getRecentTransactions(25)
-                        val progress = dao.getAllClipProgressSync()
-                        val coinStatus = coinRepository.getStatus()
-                        val adsDate = coinRepository.getSyncSnapshot().adsWatchedDate.ifBlank {
-                            if (coinStatus.adsWatchedToday > 0) todayDateKey() else ""
-                        }
-                        val pushRes = supabaseClient.upsertProfile(
-                            session = outcome.updatedSession,
-                            wallet = updatedWallet,
-                            claimedQuestIds = claimed,
-                            recentTransactions = txs,
-                            clipProgress = progress,
-                            coinStatus = coinStatus,
-                            adsWatchedDate = adsDate,
-                            lastServerWalletBalance = lastKnownServerWalletBalance,
-                            ensurePublicUserRow = true
-                        )
-                        if (pushRes is SupabaseDbSyncResult.Success) {
-                            verifiedRemoteUserId = outcome.updatedSession.userId
-                            syncedPublicUserId = outcome.updatedSession.userId
-                            coinRepository.markCloudPushSucceeded(
-                                userId = outcome.updatedSession.userId,
-                                email = outcome.newEmail,
-                                syncedBalance = updatedWallet.coinBalance
-                            )
-                            _syncNotice.value = null
-                        } else {
-                            coinRepository.markCloudPushPending(outcome.updatedSession.userId, outcome.newEmail)
-                        }
-                    }
-                }
+                finalizeEmailUpdate(outcome.updatedSession, outcome.newEmail)
             }
         }
         return result
+    }
+
+    private suspend fun finalizeEmailUpdate(updatedSession: SupabaseSession, newEmail: String) {
+        syncMutex.withLock {
+            sessionStore.saveSession(updatedSession)
+            val currentWallet = dao.getWalletState()
+            if (currentWallet != null) {
+                val updatedWallet = currentWallet.copy(
+                    userId = updatedSession.userId,
+                    userEmail = newEmail
+                )
+                dao.upsertWalletState(updatedWallet)
+                val claimed = dao.getClaimedQuestIdsSync().toSet()
+                val txs = dao.getRecentTransactions(25)
+                val progress = dao.getAllClipProgressSync()
+                val coinStatus = coinRepository.getStatus()
+                val adsDate = coinRepository.getSyncSnapshot().adsWatchedDate.ifBlank {
+                    if (coinStatus.adsWatchedToday > 0) todayDateKey() else ""
+                }
+                val pushRes = supabaseClient.upsertProfile(
+                    session = updatedSession,
+                    wallet = updatedWallet,
+                    claimedQuestIds = claimed,
+                    recentTransactions = txs,
+                    clipProgress = progress,
+                    coinStatus = coinStatus,
+                    adsWatchedDate = adsDate,
+                    lastServerWalletBalance = lastKnownServerWalletBalance,
+                    ensurePublicUserRow = true
+                )
+                if (pushRes is SupabaseDbSyncResult.Success) {
+                    verifiedRemoteUserId = updatedSession.userId
+                    syncedPublicUserId = updatedSession.userId
+                    coinRepository.markCloudPushSucceeded(
+                        userId = updatedSession.userId,
+                        email = newEmail,
+                        syncedBalance = updatedWallet.coinBalance
+                    )
+                    _syncNotice.value = null
+                } else {
+                    coinRepository.markCloudPushPending(updatedSession.userId, newEmail)
+                }
+            }
+        }
     }
 
     suspend fun signOut() {

@@ -28,12 +28,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Pin
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -81,6 +84,7 @@ import com.example.ui.theme.DarkNavBar
 import com.example.ui.theme.DeepEmerald
 import com.example.ui.theme.DeepRoyalBlue
 import com.example.ui.theme.ElectricBlue
+import com.example.data.NetworkMonitor
 import com.example.viewmodel.ChangeEmailStage
 import com.example.viewmodel.ChangeEmailUiState
 import kotlinx.coroutines.delay
@@ -103,12 +107,16 @@ fun VerificationCodeFormContent(
     onResend: () -> Unit,
     onBack: () -> Unit,
     onClearMessages: () -> Unit,
+    isOnline: Boolean = true,
+    initialResendCooldown: Int = 30,
     extraFieldsContent: (@Composable ColumnScope.(onClear: () -> Unit) -> Unit)? = null
 ) {
     BackHandler(onBack = onBack)
 
     var code by remember(targetEmail, title) { mutableStateOf("") }
-    var resendCooldown by remember(targetEmail, title) { mutableIntStateOf(30) }
+    var resendCooldown by remember(targetEmail, title) {
+        mutableIntStateOf(if (!isOnline || errorMessage != null) 0 else initialResendCooldown)
+    }
 
     LaunchedEffect(resendCooldown) {
         if (resendCooldown > 0) {
@@ -197,7 +205,8 @@ fun VerificationCodeFormContent(
 
         extraFieldsContent?.invoke(this, onClearMessages)
 
-        AuthStatusBanners(errorMessage = errorMessage, infoMessage = infoMessage)
+        val cardErrorMessage = errorMessage?.takeUnless { it == NetworkMonitor.OFFLINE_ERROR_MESSAGE }
+        AuthStatusBanners(errorMessage = cardErrorMessage, infoMessage = infoMessage)
 
         Button(
             onClick = { onVerify(code) },
@@ -268,7 +277,8 @@ fun ForgotPasswordRequestFormContent(
     infoMessage: String?,
     onSendResetCode: (String) -> Unit,
     onBackToSignIn: () -> Unit,
-    onClearMessages: () -> Unit
+    onClearMessages: () -> Unit,
+    isOnline: Boolean = true
 ) {
     BackHandler(onBack = onBackToSignIn)
 
@@ -330,7 +340,8 @@ fun ForgotPasswordRequestFormContent(
                 .testTag("reset_password_email_input")
         )
 
-        AuthStatusBanners(errorMessage = errorMessage, infoMessage = infoMessage)
+        val cardErrorMessage = errorMessage?.takeUnless { it == NetworkMonitor.OFFLINE_ERROR_MESSAGE }
+        AuthStatusBanners(errorMessage = cardErrorMessage, infoMessage = infoMessage)
 
         Button(
             onClick = { onSendResetCode(resetEmail) },
@@ -369,45 +380,76 @@ fun ForgotPasswordRequestFormContent(
 }
 
 @Composable
-fun ResetPasswordVerifyPageContent(
+fun SetNewPasswordPageContent(
     targetEmail: String,
     isLoading: Boolean,
     errorMessage: String?,
     infoMessage: String?,
-    onVerifyAndReset: (code: String, newPassword: String, confirmPassword: String) -> Unit,
-    onResendCode: () -> Unit,
+    onUpdatePassword: (newPassword: String, confirmPassword: String) -> Unit,
     onBack: () -> Unit,
     onClearMessages: () -> Unit
 ) {
+    BackHandler(onBack = onBack)
+
     var newPassword by remember(targetEmail) { mutableStateOf("") }
     var confirmPassword by remember(targetEmail) { mutableStateOf("") }
     var newVisible by remember { mutableStateOf(false) }
     var confirmVisible by remember { mutableStateOf(false) }
     val mismatch = confirmPassword.isNotEmpty() && confirmPassword != newPassword
 
-    VerificationCodeFormContent(
-        icon = Icons.Filled.LockReset,
-        title = "Verify Reset Code",
-        subtitle = "Enter the verification code sent to your email along with your new password.",
-        targetEmail = targetEmail,
-        buttonText = "Verify & Reset Password",
-        codeTestTag = "verify_reset_code_input",
-        submitTestTag = "verify_reset_submit_button",
-        resendTestTag = "verify_reset_resend_button",
-        backLabel = "Change Email",
-        isLoading = isLoading,
-        errorMessage = errorMessage,
-        infoMessage = infoMessage,
-        onVerify = { code -> onVerifyAndReset(code, newPassword, confirmPassword) },
-        onResend = onResendCode,
-        onBack = onBack,
-        onClearMessages = onClearMessages
-    ) { onClear ->
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(62.dp)
+                .clip(CircleShape)
+                .background(ElectricBlue.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.LockReset,
+                contentDescription = null,
+                tint = BrightCyanBlue,
+                modifier = Modifier.size(32.dp)
+            )
+        }
+
+        Text(
+            text = "Create New Password",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+
+        Text(
+            text = "Your verification code is confirmed. Enter and confirm your new ClipCash password.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+
+        if (targetEmail.isNotBlank()) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Text(
+                    text = targetEmail,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+            }
+        }
+
         OutlinedTextField(
             value = newPassword,
             onValueChange = {
                 newPassword = it
-                onClear()
+                onClearMessages()
             },
             label = { Text("New password (6+ characters)") },
             leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
@@ -435,7 +477,7 @@ fun ResetPasswordVerifyPageContent(
             value = confirmPassword,
             onValueChange = {
                 confirmPassword = it
-                onClear()
+                onClearMessages()
             },
             label = { Text("Confirm new password") },
             leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
@@ -459,11 +501,51 @@ fun ResetPasswordVerifyPageContent(
                 keyboardType = KeyboardType.Password,
                 imeAction = ImeAction.Done
             ),
+            keyboardActions = KeyboardActions(
+                onDone = { onUpdatePassword(newPassword, confirmPassword) }
+            ),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("reset_confirm_password_input")
         )
+
+        val cardErrorMessage = errorMessage?.takeUnless { it == NetworkMonitor.OFFLINE_ERROR_MESSAGE }
+        AuthStatusBanners(errorMessage = cardErrorMessage, infoMessage = infoMessage)
+
+        Button(
+            onClick = { onUpdatePassword(newPassword, confirmPassword) },
+            enabled = !isLoading,
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = ElectricBlue,
+                contentColor = Color.White
+            ),
+            modifier = Modifier
+                .testTag("reset_new_password_submit_button")
+                .fillMaxWidth()
+                .height(52.dp)
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(22.dp)
+                )
+            } else {
+                Text(
+                    text = "Update Password",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+        }
+
+        TextButton(
+            onClick = onBack,
+            enabled = !isLoading
+        ) {
+            Text("Back to Reset Email", fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -471,15 +553,17 @@ fun ResetPasswordVerifyPageContent(
 fun ChangeEmailScreen(
     currentEmail: String,
     state: ChangeEmailUiState,
-    onSendCode: (newEmail: String) -> Unit,
-    onVerifyCode: (code: String) -> Unit,
-    onResendCode: () -> Unit,
+    onVerifyCurrentEmailCode: (code: String) -> Unit,
+    onResendCurrentEmailCode: () -> Unit,
+    onSendNewEmail: (newEmail: String) -> Unit,
+    onVerifyNewEmailCode: (code: String) -> Unit,
+    onResendNewEmailCode: () -> Unit,
     onBackToEnterEmail: () -> Unit,
     onClearMessages: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
     BackHandler {
-        if (state.stage == ChangeEmailStage.VERIFY_CODE) {
+        if (state.stage == ChangeEmailStage.VERIFY_NEW_EMAIL) {
             onBackToEnterEmail()
         } else {
             onNavigateBack()
@@ -500,7 +584,7 @@ fun ChangeEmailScreen(
     ) {
         IconButton(
             onClick = {
-                if (state.stage == ChangeEmailStage.VERIFY_CODE) {
+                if (state.stage == ChangeEmailStage.VERIFY_NEW_EMAIL) {
                     onBackToEnterEmail()
                 } else {
                     onNavigateBack()
@@ -539,7 +623,16 @@ fun ChangeEmailScreen(
                     .clip(RoundedCornerShape(24.dp))
             )
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+
+            NetworkStatusPill(isOnline = state.isOnline)
+
+            if (!state.isOnline || state.errorMessage == NetworkMonitor.OFFLINE_ERROR_MESSAGE) {
+                Spacer(Modifier.height(12.dp))
+                OfflineInlineNotice()
+            }
+
+            Spacer(Modifier.height(14.dp))
 
             Card(
                 shape = RoundedCornerShape(28.dp),
@@ -550,6 +643,29 @@ fun ChangeEmailScreen(
             ) {
                 Box(modifier = Modifier.padding(22.dp)) {
                     when (state.stage) {
+                        ChangeEmailStage.VERIFY_CURRENT_EMAIL -> {
+                            VerificationCodeFormContent(
+                                icon = Icons.Filled.MarkEmailRead,
+                                title = "Verify Your Identity",
+                                subtitle = "Enter the verification code sent to your current email before entering a new email address.",
+                                targetEmail = state.emailBeingVerified.ifBlank { currentEmail },
+                                buttonText = "Verify & Continue",
+                                codeTestTag = "verify_current_email_code_input",
+                                submitTestTag = "verify_current_email_submit_button",
+                                resendTestTag = "verify_current_email_resend_button",
+                                backLabel = "Cancel",
+                                isLoading = state.isLoading,
+                                errorMessage = state.errorMessage,
+                                infoMessage = state.infoMessage,
+                                onVerify = onVerifyCurrentEmailCode,
+                                onResend = onResendCurrentEmailCode,
+                                onBack = onNavigateBack,
+                                onClearMessages = onClearMessages,
+                                isOnline = state.isOnline,
+                                initialResendCooldown = if (state.infoMessage != null) 30 else 0
+                            )
+                        }
+
                         ChangeEmailStage.ENTER_NEW_EMAIL -> {
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
@@ -572,14 +688,14 @@ fun ChangeEmailScreen(
                                 }
 
                                 Text(
-                                    text = "Change Email Address",
+                                    text = "New Email Address",
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold,
                                     textAlign = TextAlign.Center
                                 )
 
                                 Text(
-                                    text = "We will send a verification code to your new email address before updating your ClipCash account.",
+                                    text = "Enter the new email address you want linked to your ClipCash account.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
@@ -620,7 +736,7 @@ fun ChangeEmailScreen(
                                         imeAction = ImeAction.Done
                                     ),
                                     keyboardActions = KeyboardActions(
-                                        onDone = { onSendCode(newEmailInput) }
+                                        onDone = { onSendNewEmail(newEmailInput) }
                                     ),
                                     shape = RoundedCornerShape(16.dp),
                                     modifier = Modifier
@@ -629,12 +745,14 @@ fun ChangeEmailScreen(
                                 )
 
                                 AuthStatusBanners(
-                                    errorMessage = state.errorMessage,
+                                    errorMessage = state.errorMessage?.takeUnless {
+                                        it == NetworkMonitor.OFFLINE_ERROR_MESSAGE
+                                    },
                                     infoMessage = state.infoMessage
                                 )
 
                                 Button(
-                                    onClick = { onSendCode(newEmailInput) },
+                                    onClick = { onSendNewEmail(newEmailInput) },
                                     enabled = !state.isLoading,
                                     shape = CircleShape,
                                     colors = ButtonDefaults.buttonColors(
@@ -654,7 +772,7 @@ fun ChangeEmailScreen(
                                         )
                                     } else {
                                         Text(
-                                            text = "Send Verification Code",
+                                            text = "Update Email Address",
                                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                                         )
                                     }
@@ -669,13 +787,13 @@ fun ChangeEmailScreen(
                             }
                         }
 
-                        ChangeEmailStage.VERIFY_CODE -> {
+                        ChangeEmailStage.VERIFY_NEW_EMAIL -> {
                             VerificationCodeFormContent(
                                 icon = Icons.Filled.MarkEmailRead,
                                 title = "Verify New Email",
                                 subtitle = "Enter the verification code sent to confirm your new email address.",
                                 targetEmail = state.emailBeingVerified,
-                                buttonText = "Verify & Update Email",
+                                buttonText = "Verify & Save Email",
                                 codeTestTag = "verify_change_email_code_input",
                                 submitTestTag = "verify_change_email_submit_button",
                                 resendTestTag = "verify_change_email_resend_button",
@@ -683,10 +801,11 @@ fun ChangeEmailScreen(
                                 isLoading = state.isLoading,
                                 errorMessage = state.errorMessage,
                                 infoMessage = state.infoMessage,
-                                onVerify = onVerifyCode,
-                                onResend = onResendCode,
+                                onVerify = onVerifyNewEmailCode,
+                                onResend = onResendNewEmailCode,
                                 onBack = onBackToEnterEmail,
-                                onClearMessages = onClearMessages
+                                onClearMessages = onClearMessages,
+                                isOnline = state.isOnline
                             )
                         }
                     }
@@ -702,18 +821,7 @@ fun AuthStatusBanners(
     infoMessage: String?
 ) {
     errorMessage?.let { err ->
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = CoralRed.copy(alpha = 0.12f),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = err,
-                style = MaterialTheme.typography.bodyMedium,
-                color = CoralRed,
-                modifier = Modifier.padding(12.dp)
-            )
-        }
+        NetworkErrorCard(message = err)
     }
 
     infoMessage?.let { info ->
@@ -730,4 +838,82 @@ fun AuthStatusBanners(
             )
         }
     }
+}
+
+@Composable
+fun NetworkStatusPill(
+    isOnline: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val accent = if (isOnline) CashEmerald else CoralRed
+    val background = if (isOnline) {
+        Color(0xFF0A2E25).copy(alpha = 0.84f)
+    } else {
+        Color(0xFF3B1219).copy(alpha = 0.90f)
+    }
+    Surface(
+        shape = CircleShape,
+        color = background,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+        modifier = modifier.testTag("network_connection_pill")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = if (isOnline) Icons.Filled.Wifi else Icons.Filled.WifiOff,
+                contentDescription = if (isOnline) "Network connected" else "No internet connection",
+                tint = accent,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = if (isOnline) "Network Connected" else "No Internet Connection",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+fun NetworkErrorCard(
+    message: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFF7D241C),
+        border = BorderStroke(1.dp, Color(0xFFB91C1C).copy(alpha = 0.45f)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Error,
+                contentDescription = "Network error",
+                tint = Color(0xFFFCA5A5),
+                modifier = Modifier.size(22.dp)
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = Color(0xFFFEE2E2)
+            )
+        }
+    }
+}
+
+@Composable
+fun OfflineInlineNotice(
+    modifier: Modifier = Modifier
+) {
+    NetworkErrorCard(
+        message = NetworkMonitor.OFFLINE_ERROR_MESSAGE,
+        modifier = modifier.testTag("offline_inline_notice")
+    )
 }

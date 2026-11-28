@@ -6,7 +6,12 @@ import com.example.R
 enum class ClipCategory(val label: String, val searchTerm: String) {
     ALL("Featured", "trending shorts"),
     TRENDING("Trending", "viral shorts"),
+    FOOTBALL("Football", "football shorts"),
     MUSIC("Music", "music shorts"),
+    MOVIES("Movies", "movie shorts"),
+    FOOD("Food", "food shorts"),
+    SPORTS("Sports", "sports shorts"),
+    LIFESTYLE("Lifestyle", "lifestyle shorts"),
     GAMING("Gaming", "gaming shorts"),
     COMEDY("Comedy", "comedy funny shorts"),
     TECH("Tech", "tech gadgets shorts")
@@ -27,7 +32,8 @@ data class VideoClip(
     val remoteUuid: String? = null,
     val platform: String = "youtube",
     val rewardEligible: Boolean = true,
-    val videoUrl: String? = null
+    val videoUrl: String? = null,
+    val qualityLabel: String = "1080p HD"
 )
 
 enum class QuestMetric {
